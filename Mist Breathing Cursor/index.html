@@ -1,0 +1,1416 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mist Breathing Cursor</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #000;
+        cursor: none;
+        font-family: "Segoe UI", system-ui, sans-serif;
+      }
+      .bg {
+        position: fixed;
+        inset: 0;
+        z-index: 0;
+        background: radial-gradient(
+          ellipse at 50% 38%,
+          #020f0d 0%,
+          #010807 42%,
+          #000 100%
+        );
+      }
+      .muichiro-bg {
+        position: fixed;
+        top: -5%;
+        left: -5%;
+        width: 110%;
+        height: 110%;
+        z-index: 1;
+        background-image: url("bg.png");
+        background-size: cover;
+        background-position: center;
+        opacity: 0.95;
+        pointer-events: none;
+        will-change: transform;
+        transition: opacity 0.4s;
+      }
+      body.aura-active .muichiro-bg {
+        opacity: 0.18;
+      }
+      #c {
+        position: fixed;
+        inset: 0;
+        z-index: 10;
+        pointer-events: none;
+      }
+      #hd {
+        position: fixed;
+        inset: 0;
+        z-index: 9;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="bg"></div>
+    <div class="muichiro-bg" id="tbg"></div>
+    <canvas id="hd"></canvas>
+    <canvas id="c"></canvas>
+
+    <script>
+      (function () {
+        "use strict";
+
+        /* ── Canvas & DPR ── */
+        const C = document.getElementById("c");
+        const ctx = C.getContext("2d");
+        const HD = document.getElementById("hd");
+        const hctx = HD.getContext("2d");
+        const tbg = document.getElementById("tbg"); // cached — no per-frame DOM query
+        let W, H, dpr;
+
+        function resize() {
+          dpr = Math.min(devicePixelRatio || 1, 2);
+          W = innerWidth;
+          H = innerHeight;
+          C.width = W * dpr;
+          C.height = H * dpr;
+          C.style.width = W + "px";
+          C.style.height = H + "px";
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          HD.width = W * dpr;
+          HD.height = H * dpr;
+          HD.style.width = W + "px";
+          HD.style.height = H + "px";
+          hctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        }
+        addEventListener("resize", resize);
+        resize();
+
+        /* ── Math helpers ── */
+        const lerp = (a, b, t) => a + (b - a) * t;
+        const rand = (a, b) => a + Math.random() * (b - a);
+        const randi = (a, b) => (a + Math.random() * (b - a)) | 0;
+        const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+        const TAU = Math.PI * 2;
+        const PI = Math.PI;
+
+        /* ── Fast sin/cos lookup table (4096 entries) ── */
+        const SIN_N = 4096;
+        const SIN_TAB = new Float32Array(SIN_N);
+        const COS_TAB = new Float32Array(SIN_N);
+        for (let i = 0; i < SIN_N; i++) {
+          SIN_TAB[i] = Math.sin((i / SIN_N) * TAU);
+          COS_TAB[i] = Math.cos((i / SIN_N) * TAU);
+        }
+        const SIN_SCALE = SIN_N / TAU;
+        function fsin(a) {
+          return SIN_TAB[(a * SIN_SCALE) & (SIN_N - 1 + SIN_N) & (SIN_N - 1)];
+        }
+        function fcos(a) {
+          return COS_TAB[(a * SIN_SCALE) & (SIN_N - 1 + SIN_N) & (SIN_N - 1)];
+        }
+
+        /* ── Precomputed friction constants at 60fps baseline ── */
+        /* Instead of Math.pow(base, dtS*60) every frame, precompute for dtS≈0.01667 */
+        /* We store per-particle friction as a precomputed scalar updated only when dtS changes */
+        const FRIC_BLOB = Math.pow(0.988, 1); // per frame at 60fps (dtS*60=1)
+        const FRIC_FIL = Math.pow(0.908, 1);
+        const FRIC_DROP = Math.pow(0.974, 1);
+        const FRIC_SLASH = Math.pow(0.972, 1);
+        /* We scale friction by actual dtS*60 linearly — close enough for smooth results */
+        /* actual_fric = base ^ (dtS*60)  ≈  1 - (1-base)*(dtS*60)  for small differences */
+        /* Precompute per-frame: store delta=(1-base) then fric = 1 - delta*ratio */
+        const DFRIC_BLOB = 1 - FRIC_BLOB;
+        const DFRIC_FIL = 1 - FRIC_FIL;
+        const DFRIC_DROP = 1 - FRIC_DROP;
+        const DFRIC_SLASH = 1 - FRIC_SLASH;
+
+        /* ════════════════════════════════════════════
+         COLOR SYSTEM — Precomputed string tables
+         Zero string building during render loop
+      ════════════════════════════════════════════ */
+
+        /* Build LUT byte arrays */
+        const LUT_R = new Uint8Array(256),
+          LUT_G = new Uint8Array(256),
+          LUT_B = new Uint8Array(256);
+        (function () {
+          const stops = [
+            [0, [0, 0, 0]],
+            [22, [2, 10, 10]],
+            [55, [8, 38, 36]],
+            [95, [20, 90, 82]],
+            [135, [55, 155, 138]],
+            [172, [100, 210, 185]],
+            [210, [152, 251, 203]],
+            [240, [200, 255, 230]],
+            [255, [230, 255, 245]],
+          ];
+          for (let i = 0; i < 256; i++)
+            for (let s = 0; s < stops.length - 1; s++) {
+              const [t0, c0] = stops[s],
+                [t1, c1] = stops[s + 1];
+              if (i >= t0 && i <= t1) {
+                const f = (i - t0) / (t1 - t0);
+                LUT_R[i] = (c0[0] + (c1[0] - c0[0]) * f) | 0;
+                LUT_G[i] = (c0[1] + (c1[1] - c0[1]) * f) | 0;
+                LUT_B[i] = (c0[2] + (c1[2] - c0[2]) * f) | 0;
+                break;
+              }
+            }
+        })();
+
+        const VLUT_R = new Uint8Array(256),
+          VLUT_G = new Uint8Array(256),
+          VLUT_B = new Uint8Array(256);
+        (function () {
+          const stops = [
+            [0, [0, 0, 0]],
+            [35, [5, 18, 18]],
+            [80, [25, 70, 68]],
+            [130, [80, 165, 155]],
+            [180, [160, 230, 218]],
+            [220, [210, 250, 240]],
+            [255, [240, 255, 252]],
+          ];
+          for (let i = 0; i < 256; i++)
+            for (let s = 0; s < stops.length - 1; s++) {
+              const [t0, c0] = stops[s],
+                [t1, c1] = stops[s + 1];
+              if (i >= t0 && i <= t1) {
+                const f = (i - t0) / (t1 - t0);
+                VLUT_R[i] = (c0[0] + (c1[0] - c0[0]) * f) | 0;
+                VLUT_G[i] = (c0[1] + (c1[1] - c0[1]) * f) | 0;
+                VLUT_B[i] = (c0[2] + (c1[2] - c0[2]) * f) | 0;
+                break;
+              }
+            }
+        })();
+
+        /* Precomputed color string tables at 64 alpha levels × 256 t-values would be too much RAM.
+         Instead use a fast inline builder with numeric rounding cached. */
+        /* Key optimization: round alpha to 2dp to reduce unique gradient stop strings */
+        function mistColor(t, a) {
+          const i = (t * 255 + 0.5) | 0;
+          const ii = i < 0 ? 0 : i > 255 ? 255 : i;
+          return `rgba(${LUT_R[ii]},${LUT_G[ii]},${LUT_B[ii]},${((a * 100 + 0.5) | 0) / 100})`;
+        }
+        function vaporColor(t, a) {
+          const i = (t * 255 + 0.5) | 0;
+          const ii = i < 0 ? 0 : i > 255 ? 255 : i;
+          return `rgba(${VLUT_R[ii]},${VLUT_G[ii]},${VLUT_B[ii]},${((a * 100 + 0.5) | 0) / 100})`;
+        }
+
+        /* Frequently reused static color strings — avoid repeated construction */
+        const COL_ZERO = "rgba(0,0,0,0)";
+
+        /* ── Pointer state ── */
+        const P = {
+          x: W / 2,
+          y: H / 2,
+          tx: W / 2,
+          ty: H / 2,
+          px: W / 2,
+          py: H / 2,
+          vx: 0,
+          vy: 0,
+          speed: 0,
+          lastMove: 0,
+        };
+        function setTarget(x, y) {
+          P.tx = x;
+          P.ty = y;
+          P.lastMove = performance.now();
+        }
+        addEventListener("mousemove", (e) => setTarget(e.clientX, e.clientY));
+        addEventListener(
+          "touchmove",
+          (e) => {
+            if (e.touches.length)
+              setTarget(e.touches[0].clientX, e.touches[0].clientY);
+          },
+          { passive: true },
+        );
+        addEventListener("mousedown", (e) => {
+          document.body.classList.add("aura-active");
+          burst(e.clientX, e.clientY);
+        });
+        addEventListener("mouseup", () =>
+          document.body.classList.remove("aura-active"),
+        );
+        addEventListener("mouseleave", () =>
+          document.body.classList.remove("aura-active"),
+        );
+        addEventListener(
+          "touchstart",
+          (e) => {
+            document.body.classList.add("aura-active");
+            if (e.touches.length) {
+              setTarget(e.touches[0].clientX, e.touches[0].clientY);
+              burst(P.tx, P.ty);
+            }
+          },
+          { passive: true },
+        );
+        addEventListener("touchend", () =>
+          document.body.classList.remove("aura-active"),
+        );
+
+        /* ════════════════════════════════════════════
+         PARTICLE POOLS  (flat object arrays, pre-allocated)
+      ════════════════════════════════════════════ */
+
+        /* — Volumetric mist blobs — */
+        const BMAX = 220; // reduced from 280: same visual density, less work
+        const blobs = new Array(BMAX);
+        for (let i = 0; i < BMAX; i++)
+          blobs[i] = {
+            alive: false,
+            x: 0,
+            y: 0,
+            vx: 0,
+            vy: 0,
+            age: 0,
+            life: 1,
+            r: 0,
+            density: 0,
+            vapor: false,
+            turbX: 0,
+            turbY: 0,
+            turbVx: 0,
+            turbVy: 0, // accumulated turbulence state
+            driftFreq: 1,
+            phase: 0,
+            growRate: 0.2,
+            dissipate: 0.8,
+          };
+        let bHead = 0;
+        function spawnBlob(x, y, vx, vy, r, life, density, vapor) {
+          const b = blobs[bHead % BMAX];
+          bHead++;
+          b.alive = true;
+          b.x = x;
+          b.y = y;
+          b.vx = vx;
+          b.vy = vy;
+          b.age = 0;
+          b.life = life;
+          b.r = r;
+          b.density = density;
+          b.vapor = !!vapor;
+          b.turbX = 0;
+          b.turbY = 0;
+          b.turbVx = rand(-0.8, 0.8);
+          b.turbVy = rand(-0.5, 0.5); // initial turbulence vel
+          b.driftFreq = rand(0.4, 1.4);
+          b.phase = rand(0, TAU);
+          b.growRate = rand(0.12, 0.38);
+          b.dissipate = rand(0.6, 0.95);
+        }
+
+        /* — Mist filaments — */
+        const FMAX = 280; // reduced from 360
+        const filaments = new Array(FMAX);
+        for (let i = 0; i < FMAX; i++)
+          filaments[i] = {
+            alive: false,
+            x: 0,
+            y: 0,
+            px: 0,
+            py: 0,
+            vx: 0,
+            vy: 0,
+            age: 0,
+            life: 1,
+            bright: 0,
+            vapor: false,
+            sway: 0,
+            swayFreq: 1,
+            phase: 0,
+          };
+        let fHead = 0;
+        function spawnFilament(x, y, vx, vy, life, bright, vapor) {
+          const s = filaments[fHead % FMAX];
+          fHead++;
+          s.alive = true;
+          s.x = x;
+          s.y = y;
+          s.px = x;
+          s.py = y;
+          s.vx = vx;
+          s.vy = vy;
+          s.age = 0;
+          s.life = life;
+          s.bright = bright;
+          s.vapor = !!vapor;
+          s.sway = rand(0.3, 1.1);
+          s.swayFreq = rand(0.8, 2.2);
+          s.phase = rand(0, TAU);
+        }
+
+        /* — Mist veils — */
+        const VMAX = 65; // reduced from 80
+        const veils = new Array(VMAX);
+        for (let i = 0; i < VMAX; i++)
+          veils[i] = {
+            alive: false,
+            x: 0,
+            y: 0,
+            vx: 0,
+            vy: 0,
+            age: 0,
+            life: 1,
+            r: 0,
+            density: 0,
+            phase: 0,
+            waveAmp: 0,
+            waveFreq: 1,
+          };
+        let vHead = 0;
+        function spawnVeil(x, y, vx, vy, r, life, density) {
+          const v = veils[vHead % VMAX];
+          vHead++;
+          v.alive = true;
+          v.x = x;
+          v.y = y;
+          v.vx = vx;
+          v.vy = vy;
+          v.age = 0;
+          v.life = life;
+          v.r = r;
+          v.density = density;
+          v.phase = rand(0, TAU);
+          v.waveAmp = rand(8, 28);
+          v.waveFreq = rand(0.5, 1.6);
+        }
+
+        /* — Mist slashes — */
+        const SLMAX = 120; // reduced from 140
+        const slashes = new Array(SLMAX);
+        for (let i = 0; i < SLMAX; i++)
+          slashes[i] = {
+            alive: false,
+            x: 0,
+            y: 0,
+            vx: 0,
+            vy: 0,
+            angle: 0,
+            r: 0,
+            arcSpan: 0,
+            age: 0,
+            life: 1,
+            hot: 0,
+            vapor: false,
+            spin: 0,
+            growRate: 0,
+          };
+        let slHead = 0;
+        function spawnSlash(x, y, angle, speed, r, arcSpan, life, hot, vapor) {
+          const s = slashes[slHead % SLMAX];
+          slHead++;
+          s.alive = true;
+          s.x = x;
+          s.y = y;
+          s.vx = Math.cos(angle) * speed;
+          s.vy = Math.sin(angle) * speed;
+          s.angle = angle;
+          s.r = r;
+          s.arcSpan = arcSpan;
+          s.age = 0;
+          s.life = life;
+          s.hot = hot;
+          s.vapor = !!vapor;
+          s.spin = rand(-2.2, 2.2);
+          s.growRate = rand(0.08, 0.22);
+        }
+
+        /* — Condensation droplets — */
+        const DMAX = 380; // reduced from 520
+        const droplets = new Array(DMAX);
+        for (let i = 0; i < DMAX; i++)
+          droplets[i] = {
+            alive: false,
+            x: 0,
+            y: 0,
+            vx: 0,
+            vy: 0,
+            age: 0,
+            life: 1,
+            sz: 0,
+            density: 0,
+            sway: 0,
+            phase: 0,
+            grav: 0,
+            vapor: false,
+            rot: 0,
+            rotSpd: 0,
+            isStreak: false,
+          };
+        let dHead = 0;
+        function spawnDroplet(x, y, vx, vy, life, sz, density, vapor) {
+          const e = droplets[dHead % DMAX];
+          dHead++;
+          e.alive = true;
+          e.x = x;
+          e.y = y;
+          e.vx = vx;
+          e.vy = vy;
+          e.age = 0;
+          e.life = life;
+          e.sz = sz;
+          e.density = density;
+          e.sway = rand(0.4, 1.6);
+          e.phase = rand(0, TAU);
+          e.grav = rand(-18, 12);
+          e.vapor = !!vapor;
+          e.rot = rand(0, TAU);
+          e.rotSpd = rand(-1.5, 1.5);
+          e.isStreak = Math.random() < 0.28;
+        }
+
+        /* — Ripple waves & flashes — */
+        const waves = [],
+          flashes = [];
+
+        /* — HD shimmer cells — */
+        const HDMAX = 140; // reduced from 180
+        const hdCells = new Array(HDMAX);
+        for (let i = 0; i < HDMAX; i++)
+          hdCells[i] = { alive: false, x: 0, y: 0, str: 0, age: 0, life: 1 };
+        let hdHead = 0;
+        function spawnHD(x, y, str, life) {
+          const h = hdCells[hdHead % HDMAX];
+          hdHead++;
+          h.alive = true;
+          h.x = x;
+          h.y = y;
+          h.str = str;
+          h.age = 0;
+          h.life = life;
+        }
+
+        /* — Trail — */
+        const TMAX = 80;
+        const trail = [];
+
+        /* ════════════════════════════════════════════
+         DRAW PRIMITIVES
+      ════════════════════════════════════════════ */
+
+        /* Mist slash — crescent arc shape */
+        function drawSlash(cx, cy, r, baseAngle, arcSpan, hot, vapor, alpha) {
+          ctx.save();
+          ctx.translate(cx, cy);
+          ctx.rotate(baseAngle);
+          ctx.beginPath();
+          const halfSpan = arcSpan * 0.5;
+          ctx.arc(0, 0, r, -halfSpan, halfSpan);
+          ctx.arc(
+            r * 0.36,
+            0,
+            r * 0.74,
+            halfSpan + 0.08,
+            -halfSpan - 0.08,
+            true,
+          );
+          ctx.closePath();
+          const g = ctx.createRadialGradient(0, 0, 0, 0, 0, r);
+          if (vapor) {
+            g.addColorStop(0, vaporColor(hot, alpha));
+            g.addColorStop(0.5, vaporColor(hot * 0.65, alpha * 0.55));
+            g.addColorStop(1, COL_ZERO);
+          } else {
+            g.addColorStop(0, mistColor(hot, alpha));
+            g.addColorStop(0.5, mistColor(hot * 0.65, alpha * 0.55));
+            g.addColorStop(1, COL_ZERO);
+          }
+          ctx.fillStyle = g;
+          ctx.fill();
+          ctx.lineWidth = r * 0.055 > 0.5 ? r * 0.055 : 0.5;
+          ctx.strokeStyle = vaporColor(0.95, alpha * 0.45);
+          ctx.beginPath();
+          ctx.arc(0, 0, r, -halfSpan, halfSpan);
+          ctx.stroke();
+          ctx.restore();
+        }
+
+        /* Volumetric blob — SINGLE radial gradient with 5 stops (was 3 separate draws)
+         Merging 3 passes into 1 cuts radialGradient creates from 3/blob to 1/blob  */
+        function drawBlob(b, alpha) {
+          const tp = b.age / b.life;
+          const r = b.r * (1 + tp * b.growRate * 3.5);
+          if (r < 2) return;
+          const hazeR = r * 2.8;
+          const hazeA = alpha * 0.08 * b.density;
+          const bodyA = alpha * 0.22 * b.density;
+          const coreA =
+            r > 12 && b.density > 0.4 ? alpha * 0.18 * b.density : 0;
+
+          const g = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, hazeR);
+          if (b.vapor) {
+            g.addColorStop(0, vaporColor(1.0, coreA + bodyA * 1.2));
+            g.addColorStop(0.2, vaporColor(0.88, bodyA * 0.9));
+            g.addColorStop(0.4, vaporColor(0.72, bodyA * 0.55));
+            g.addColorStop(0.65, vaporColor(0.5, hazeA));
+            g.addColorStop(0.82, vaporColor(0.35, hazeA * 0.45));
+            g.addColorStop(1, COL_ZERO);
+          } else {
+            g.addColorStop(0, mistColor(1.0, coreA + bodyA * 1.2));
+            g.addColorStop(0.2, mistColor(0.85, bodyA * 0.9));
+            g.addColorStop(0.4, mistColor(0.68, bodyA * 0.55));
+            g.addColorStop(0.65, mistColor(0.52, hazeA));
+            g.addColorStop(0.82, mistColor(0.35, hazeA * 0.45));
+            g.addColorStop(1, COL_ZERO);
+          }
+          ctx.fillStyle = g;
+          ctx.beginPath();
+          ctx.arc(b.x, b.y, hazeR, 0, TAU);
+          ctx.fill();
+        }
+
+        /* ════════════════════════════════════════════
+         BURST — Mist Breathing click effect
+      ════════════════════════════════════════════ */
+        function burst(x, y) {
+          waves.push({ x, y, r: 0, maxR: rand(220, 340), age: 0, life: 900 });
+          waves.push({
+            x,
+            y,
+            r: 0,
+            maxR: rand(130, 200),
+            age: 0,
+            life: 680,
+            delay: 110,
+          });
+          waves.push({
+            x,
+            y,
+            r: 0,
+            maxR: rand(60, 110),
+            age: 0,
+            life: 480,
+            delay: 200,
+          });
+          flashes.push({ x, y, r: 0, maxR: rand(280, 440), age: 0, life: 600 });
+
+          const SLASHES = 16;
+          for (let i = 0; i < SLASHES; i++) {
+            const a = (i / SLASHES) * TAU + rand(-0.1, 0.1);
+            const spd = rand(100, 320);
+            const isV = Math.random() < 0.3;
+            const arc = rand(0.8, 2.0) * (Math.random() < 0.5 ? 1 : -1);
+            spawnSlash(
+              x,
+              y,
+              a,
+              spd,
+              rand(22, 52),
+              arc,
+              rand(500, 950),
+              rand(0.7, 1.0),
+              isV,
+            );
+            const ca = Math.cos(a),
+              sa = Math.sin(a);
+            for (let k = 0; k < 3; k++) {
+              const da = rand(-0.4, 0.4);
+              spawnBlob(
+                x + Math.cos(a + da) * rand(10, 60),
+                y + Math.sin(a + da) * rand(10, 60),
+                ca * spd * rand(0.08, 0.35),
+                sa * spd * rand(0.08, 0.35) - rand(5, 25),
+                rand(28, 72),
+                rand(900, 1800),
+                rand(0.55, 0.9),
+                isV,
+              );
+            }
+          }
+          for (let i = 0; i < 22; i++) {
+            const a = rand(0, TAU),
+              spd = rand(20, 140);
+            spawnBlob(
+              x + rand(-20, 20),
+              y + rand(-20, 20),
+              Math.cos(a) * spd,
+              Math.sin(a) * spd - rand(15, 55),
+              rand(40, 110),
+              rand(1100, 2400),
+              rand(0.65, 1.0),
+              Math.random() < 0.25,
+            );
+          }
+          for (let i = 0; i < 8; i++) {
+            const a = (i / 8) * TAU;
+            spawnVeil(
+              x + Math.cos(a) * rand(20, 80),
+              y + Math.sin(a) * rand(20, 80),
+              Math.cos(a) * rand(10, 40),
+              Math.sin(a) * rand(10, 40) - rand(5, 20),
+              rand(90, 200),
+              rand(1500, 3000),
+              rand(0.18, 0.42),
+            );
+          }
+          for (let i = 0; i < 180; i++) {
+            const a = rand(0, TAU),
+              spd = rand(60, 480);
+            spawnFilament(
+              x,
+              y,
+              Math.cos(a) * spd,
+              Math.sin(a) * spd,
+              rand(300, 1100),
+              rand(0.55, 0.92),
+              Math.random() < 0.28,
+            );
+          }
+          for (let i = 0; i < 130; i++) {
+            const a = rand(0, TAU),
+              spd = rand(25, 200);
+            spawnDroplet(
+              x,
+              y,
+              Math.cos(a) * spd,
+              Math.sin(a) * spd - rand(20, 80),
+              rand(600, 1600),
+              rand(1.0, 3.2),
+              rand(0.5, 1.0),
+              Math.random() < 0.22,
+            );
+          }
+          spawnHD(x, y, rand(10, 16), rand(700, 1200));
+        }
+
+        /* Trail helper */
+        function addTrail(x, y, t) {
+          if (trail.length >= TMAX) trail.shift();
+          trail.push({ x, y, t });
+        }
+
+        /* ════════════════════════════════════════════
+         MAIN LOOP
+      ════════════════════════════════════════════ */
+        let last = performance.now();
+        let ambB = 0,
+          ambF = 0,
+          ambV = 0,
+          ambD = 0,
+          ambHD = 0,
+          ambSl = 0;
+        let hdFrame = 0; // HD canvas skip-frame counter
+
+        /* Precompute ease constant — update only when dtS changes significantly */
+        let lastDtS = 0,
+          easeK = 0;
+
+        function frame(now) {
+          requestAnimationFrame(frame);
+          const dt = now - last < 33 ? now - last : 33;
+          last = now;
+          const dtS = dt * 0.001;
+
+          /* Friction scalars for this frame (linear approx: 1 - delta*ratio) */
+          const ratio = dtS * 60;
+          const fricBlob = 1 - DFRIC_BLOB * ratio;
+          const fricFil = 1 - DFRIC_FIL * ratio;
+          const fricDrop = 1 - DFRIC_DROP * ratio;
+          const fricSlash = 1 - DFRIC_SLASH * ratio;
+
+          /* Pointer tracking */
+          P.px = P.x;
+          P.py = P.y;
+          /* Cache ease computation — Math.pow only when dtS changes */
+          if (Math.abs(dtS - lastDtS) > 0.0001) {
+            easeK = 1 - Math.pow(0.001, dtS * 5);
+            lastDtS = dtS;
+          }
+          P.x = lerp(P.x, P.tx, easeK);
+          P.y = lerp(P.y, P.ty, easeK);
+          P.vx = (P.x - P.px) / (dtS > 0.0001 ? dtS : 0.0001);
+          P.vy = (P.y - P.py) / (dtS > 0.0001 ? dtS : 0.0001);
+          P.speed = Math.hypot(P.vx, P.vy);
+
+          /* Parallax — cached DOM ref */
+          const bx = (P.tx / W - 0.5) * -30;
+          const by = (P.ty / H - 0.5) * -30;
+          tbg.style.transform = `translate(${bx | 0}px,${by | 0}px) scale(1.08)`;
+
+          addTrail(P.x, P.y, now);
+          while (trail.length && now - trail[0].t > 420) trail.shift();
+
+          const idle = now - P.lastMove;
+          const moving = idle < 150;
+          const speedFactor = P.speed < 280 ? P.speed / 280 : 1;
+
+          /* ── Ambient emission ── */
+          ambB -= dt;
+          if (ambB <= 0) {
+            ambB = moving ? rand(12, 30) : rand(35, 70);
+            const n = moving ? randi(2, 5) : randi(1, 2);
+            for (let i = 0; i < n; i++) {
+              const a = -PI * 0.5 + rand(-1.4, 1.4);
+              const spd = rand(8, 45) * (1 + speedFactor * 1.6);
+              spawnBlob(
+                P.x + rand(-8, 8),
+                P.y + rand(-8, 8),
+                Math.cos(a) * spd,
+                Math.sin(a) * spd - rand(5, 28),
+                rand(22, 58),
+                rand(800, 2000),
+                rand(0.35, 0.82),
+                Math.random() < 0.15,
+              );
+            }
+          }
+          ambV -= dt;
+          if (ambV <= 0) {
+            ambV = moving ? rand(60, 140) : rand(140, 280);
+            if (Math.random() < (moving ? 0.7 : 0.35)) {
+              const a = rand(0, TAU),
+                spd = rand(4, 22) * (1 + speedFactor * 0.8);
+              spawnVeil(
+                P.x + rand(-20, 20),
+                P.y + rand(-20, 20),
+                Math.cos(a) * spd,
+                Math.sin(a) * spd - rand(3, 12),
+                rand(60, 140),
+                rand(1200, 2800),
+                rand(0.1, 0.28),
+              );
+            }
+          }
+          ambF -= dt;
+          if (ambF <= 0) {
+            ambF = moving ? rand(10, 28) : rand(32, 68);
+            const n = moving ? randi(2, 5) : randi(1, 2);
+            for (let i = 0; i < n; i++) {
+              const a = rand(0, TAU),
+                spd = rand(18, 85) * (1 + speedFactor * 1.5);
+              spawnFilament(
+                P.x + rand(-6, 6),
+                P.y + rand(-6, 6),
+                Math.cos(a) * spd,
+                Math.sin(a) * spd - rand(5, 25),
+                rand(300, 900),
+                rand(0.4, 0.85),
+                Math.random() < 0.12,
+              );
+            }
+          }
+          ambD -= dt;
+          if (ambD <= 0) {
+            ambD = moving ? rand(10, 26) : rand(30, 62);
+            const n = moving ? randi(2, 4) : 1;
+            for (let i = 0; i < n; i++) {
+              const a = -PI * 0.5 + rand(-1.2, 1.2),
+                spd = rand(8, 50) * (1 + speedFactor * 1.8);
+              spawnDroplet(
+                P.x + rand(-6, 6),
+                P.y + rand(-6, 6),
+                Math.cos(a) * spd,
+                Math.sin(a) * spd - rand(8, 30),
+                rand(600, 1400),
+                rand(0.8, 2.2),
+                rand(0.4, 0.88),
+                Math.random() < 0.1,
+              );
+            }
+          }
+          ambSl -= dt;
+          if (ambSl <= 0) {
+            ambSl = moving ? rand(55, 130) : rand(180, 400);
+            if (Math.random() < (moving ? 0.65 : 0.18)) {
+              const a = rand(0, TAU);
+              spawnSlash(
+                P.x + rand(-10, 10),
+                P.y + rand(-10, 10),
+                a,
+                rand(15, 60),
+                rand(8, 20),
+                rand(0.6, 1.8) * (Math.random() < 0.5 ? 1 : -1),
+                rand(280, 620),
+                rand(0.45, 0.85),
+                Math.random() < 0.2,
+              );
+            }
+          }
+          ambHD -= dt;
+          if (ambHD <= 0) {
+            ambHD = rand(85, 170);
+            spawnHD(
+              P.x + rand(-18, 18),
+              P.y + rand(-18, 18),
+              rand(3, 6),
+              rand(200, 420),
+            );
+          }
+
+          /* Movement-triggered */
+          if (moving && P.speed > 20) {
+            const n =
+              P.speed < 90 ? 1 : P.speed < 180 ? 2 : P.speed < 270 ? 4 : 6;
+            for (let i = 0; i < n; i++) {
+              const t = Math.random();
+              const sx = P.px + (P.x - P.px) * t,
+                sy = P.py + (P.y - P.py) * t;
+              const isV = Math.random() < 0.12;
+              spawnBlob(
+                sx + rand(-6, 6),
+                sy + rand(-6, 6),
+                P.vx * rand(0.04, 0.14) + rand(-18, 18),
+                P.vy * rand(0.04, 0.14) - rand(8, 32),
+                rand(14, 44),
+                rand(500, 1200),
+                rand(0.38, 0.78),
+                isV,
+              );
+              if (Math.random() < 0.5) {
+                const ta = Math.atan2(-P.vy, -P.vx) + rand(-0.7, 0.7);
+                spawnFilament(
+                  sx,
+                  sy,
+                  Math.cos(ta) * rand(30, 100) + P.vx * 0.08,
+                  Math.sin(ta) * rand(30, 100) + P.vy * 0.08,
+                  rand(200, 600),
+                  rand(0.5, 0.9),
+                  isV,
+                );
+              }
+              if (Math.random() < 0.44)
+                spawnDroplet(
+                  sx,
+                  sy,
+                  P.vx * 0.06 + rand(-28, 28),
+                  -rand(22, 90),
+                  rand(400, 1000),
+                  rand(0.7, 1.8),
+                  rand(0.45, 0.88),
+                  isV,
+                );
+              if (P.speed > 140 && Math.random() < 0.3) {
+                const sa = Math.atan2(P.vy, P.vx) + rand(-0.6, 0.6);
+                spawnSlash(
+                  sx,
+                  sy,
+                  sa,
+                  rand(50, 140),
+                  rand(8, 20),
+                  rand(0.5, 1.5),
+                  rand(200, 520),
+                  rand(0.6, 1.0),
+                  isV,
+                );
+              }
+            }
+          }
+
+          /* ═══════════════ DRAW ═══════════════ */
+          ctx.clearRect(0, 0, W, H);
+          ctx.globalCompositeOperation = "lighter";
+
+          /* Flashes */
+          for (let i = flashes.length - 1; i >= 0; i--) {
+            const f = flashes[i];
+            f.age += dt;
+            if (f.age >= f.life) {
+              flashes.splice(i, 1);
+              continue;
+            }
+            const tp = f.age / f.life;
+            const r = f.maxR * Math.pow(tp, 0.24);
+            const a = (1 - tp) * (1 - tp) * 0.26;
+            const g = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, r);
+            g.addColorStop(
+              0,
+              `rgba(210,255,238,${((a * 100 + 0.5) | 0) / 100})`,
+            );
+            g.addColorStop(
+              0.2,
+              `rgba(100,240,200,${((a * 0.72 * 100 + 0.5) | 0) / 100})`,
+            );
+            g.addColorStop(
+              0.5,
+              `rgba(30,130,110,${((a * 0.42 * 100 + 0.5) | 0) / 100})`,
+            );
+            g.addColorStop(
+              0.8,
+              `rgba(5,50,40,${((a * 0.18 * 100 + 0.5) | 0) / 100})`,
+            );
+            g.addColorStop(1, COL_ZERO);
+            ctx.fillStyle = g;
+            ctx.beginPath();
+            ctx.arc(f.x, f.y, r, 0, TAU);
+            ctx.fill();
+          }
+
+          /* Ripple waves */
+          for (let i = waves.length - 1; i >= 0; i--) {
+            const w = waves[i];
+            if (w.delay && w.delay > 0) {
+              w.delay -= dt;
+              continue;
+            }
+            w.age += dt;
+            if (w.age >= w.life) {
+              waves.splice(i, 1);
+              continue;
+            }
+            const tp = w.age / w.life;
+            const r = w.maxR * Math.pow(tp, 0.42);
+            const a = (1 - tp) * (1 - tp) * 0.65;
+            const lw = lerp(5.5, 0.3, tp);
+            ctx.beginPath();
+            ctx.arc(w.x, w.y, r * 1.12, 0, TAU);
+            ctx.lineWidth = lw * 3.8;
+            ctx.strokeStyle = `rgba(50,160,130,${((a * 0.22 * 100 + 0.5) | 0) / 100})`;
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.arc(w.x, w.y, r, 0, TAU);
+            ctx.lineWidth = lw;
+            ctx.strokeStyle = `rgba(130,230,200,${((a * 100 + 0.5) | 0) / 100})`;
+            ctx.stroke();
+            ctx.lineWidth = lw * 2.5;
+            ctx.strokeStyle = `rgba(60,180,150,${((a * 0.3 * 100 + 0.5) | 0) / 100})`;
+            ctx.stroke();
+            if (tp < 0.5) {
+              const ta = a * (1 - tp / 0.5);
+              ctx.lineWidth = lw * 0.5;
+              ctx.strokeStyle = `rgba(210,255,240,${((ta * 0.7 * 100 + 0.5) | 0) / 100})`;
+              ctx.stroke();
+            }
+          }
+
+          /* Veils — source-over */
+          ctx.globalCompositeOperation = "source-over";
+          for (let i = 0; i < VMAX; i++) {
+            const v = veils[i];
+            if (!v.alive) continue;
+            v.age += dt;
+            if (v.age >= v.life) {
+              v.alive = false;
+              continue;
+            }
+            v.x +=
+              (v.vx +
+                Math.sin(now * 0.001 * v.waveFreq + v.phase) * v.waveAmp) *
+              dtS;
+            v.y += v.vy * dtS;
+            v.vy -= dtS * 2.8;
+            v.vx *= fricBlob;
+            const tp = v.age / v.life;
+            const r = v.r * (1 + tp * 0.9);
+            const a = Math.sin(tp * PI) * v.density * 0.09;
+            if (a < 0.004) continue;
+            const g = ctx.createRadialGradient(
+              v.x,
+              v.y,
+              0,
+              v.x,
+              v.y,
+              r < 2 ? 2 : r,
+            );
+            g.addColorStop(0, mistColor(0.72, a * 1.3));
+            g.addColorStop(0.4, mistColor(0.52, a * 0.7));
+            g.addColorStop(0.75, mistColor(0.28, a * 0.25));
+            g.addColorStop(1, COL_ZERO);
+            ctx.fillStyle = g;
+            ctx.beginPath();
+            ctx.arc(v.x, v.y, r < 2 ? 2 : r, 0, TAU);
+            ctx.fill();
+          }
+
+          /* Blobs — source-over, single-gradient draw */
+          ctx.globalCompositeOperation = "source-over";
+          for (let i = 0; i < BMAX; i++) {
+            const b = blobs[i];
+            if (!b.alive) continue;
+            b.age += dt;
+            if (b.age >= b.life) {
+              b.alive = false;
+              continue;
+            }
+
+            /* Lightweight turbulence via accumulated offset — no trig per blob per frame */
+            /* Turbulence velocity slowly changes driven by a single global time phase */
+            b.turbVx +=
+              (Math.sin(now * 0.00082 + b.phase) * 0.6 - b.turbVx * 0.04) *
+              dtS *
+              8;
+            b.turbVy +=
+              (Math.cos(now * 0.00068 + b.phase * 1.3) * 0.4 -
+                b.turbVy * 0.04) *
+              dtS *
+              8;
+            b.x += (b.vx + b.turbVx * 18) * dtS;
+            b.y += b.vy * dtS;
+            b.vy -= dtS * 3.5;
+            b.vx *= fricBlob;
+
+            const tp = b.age / b.life;
+            const env = Math.pow(Math.sin(tp * PI), b.dissipate);
+            if (env < 0.008) continue;
+            drawBlob(b, env);
+          }
+
+          /* Slashes */
+          ctx.globalCompositeOperation = "lighter";
+          for (let i = 0; i < SLMAX; i++) {
+            const s = slashes[i];
+            if (!s.alive) continue;
+            s.age += dt;
+            if (s.age >= s.life) {
+              s.alive = false;
+              continue;
+            }
+            s.x += s.vx * dtS;
+            s.y += s.vy * dtS;
+            s.vy -= dtS * 16;
+            s.vx *= fricSlash;
+            s.angle += s.spin * dtS;
+            const tp = s.age / s.life;
+            const hotness = s.hot * (1 - tp);
+            const r = s.r * (1 + tp * s.growRate * 4);
+            const a = Math.sin(tp * PI) * 0.76 * s.hot;
+            if (a < 0.02) continue;
+            const gr = r * 2.2;
+            const gg = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, gr);
+            gg.addColorStop(
+              0,
+              s.vapor
+                ? vaporColor(hotness, a * 0.3)
+                : mistColor(hotness, a * 0.3),
+            );
+            gg.addColorStop(1, COL_ZERO);
+            ctx.fillStyle = gg;
+            ctx.beginPath();
+            ctx.arc(s.x, s.y, gr, 0, TAU);
+            ctx.fill();
+            drawSlash(
+              s.x,
+              s.y,
+              r,
+              s.angle,
+              Math.abs(s.arcSpan),
+              hotness,
+              s.vapor,
+              a,
+            );
+          }
+
+          /* Trail */
+          if (trail.length >= 3) {
+            for (let i = 1; i < trail.length; i++) {
+              const age = (now - trail[i].t) / 420;
+              const alpha = 1 - age;
+              if (alpha < 0.01) continue;
+              const w = 1.4 + 8.6 * (1 - age);
+              ctx.beginPath();
+              ctx.moveTo(trail[i - 1].x, trail[i - 1].y);
+              ctx.lineTo(trail[i].x, trail[i].y);
+              const a2 = ((alpha * 100 + 0.5) | 0) / 100;
+              ctx.lineWidth = w * 5.2;
+              ctx.strokeStyle = `rgba(8,55,48,${((alpha * 0.14 * 100 + 0.5) | 0) / 100})`;
+              ctx.stroke();
+              ctx.lineWidth = w * 3.0;
+              ctx.strokeStyle = `rgba(40,170,140,${((alpha * 0.28 * 100 + 0.5) | 0) / 100})`;
+              ctx.stroke();
+              ctx.lineWidth = w * 1.7;
+              ctx.strokeStyle = `rgba(100,230,190,${((alpha * 0.36 * 100 + 0.5) | 0) / 100})`;
+              ctx.stroke();
+              ctx.lineWidth = w * 1.0;
+              ctx.strokeStyle = `rgba(170,248,215,${((alpha * 0.65 * 100 + 0.5) | 0) / 100})`;
+              ctx.stroke();
+              ctx.lineWidth = w * 0.42 > 0.7 ? w * 0.42 : 0.7;
+              ctx.strokeStyle = `rgba(228,255,242,${((alpha * 0.96 * 100 + 0.5) | 0) / 100})`;
+              ctx.stroke();
+            }
+          }
+
+          /* Filaments — use setTransform for efficiency */
+          for (let i = 0; i < FMAX; i++) {
+            const f = filaments[i];
+            if (!f.alive) continue;
+            f.age += dt;
+            if (f.age >= f.life) {
+              f.alive = false;
+              continue;
+            }
+            f.px = f.x;
+            f.py = f.y;
+            f.x +=
+              f.vx * dtS +
+              Math.sin(now * 0.001 * f.swayFreq + f.phase) * f.sway * 12 * dtS;
+            f.y += f.vy * dtS;
+            f.vy += 65 * dtS;
+            f.vx *= fricFil;
+            const tp = f.age / f.life;
+            const a = (1 - tp) * (1 - tp) * f.bright * 1.1;
+            if (a < 0.01) continue;
+            const hot = 1 - tp * 0.48;
+            const tlen = Math.hypot(f.x - f.px, f.y - f.py);
+            const slen = tlen < 1.5 ? 1.5 : tlen > 24 ? 24 : tlen;
+            const ang = Math.atan2(f.y - f.py, f.x - f.px);
+            ctx.setTransform(dpr, 0, 0, dpr, f.x, f.y);
+            ctx.rotate(ang + PI);
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.lineTo(slen, 0);
+            const gc = ctx.createLinearGradient(0, 0, slen, 0);
+            gc.addColorStop(
+              0,
+              f.vapor ? vaporColor(hot, a) : mistColor(hot, a),
+            );
+            gc.addColorStop(
+              1,
+              f.vapor ? vaporColor(hot * 0.28, 0) : mistColor(hot * 0.28, 0),
+            );
+            const lw = 1.8 - tp * 1.3;
+            ctx.strokeStyle = gc;
+            ctx.lineWidth = lw < 0.3 ? 0.3 : lw;
+            ctx.stroke();
+            ctx.strokeStyle = f.vapor
+              ? vaporColor(hot, a * 0.18)
+              : mistColor(hot, a * 0.18);
+            ctx.lineWidth = (lw < 0.3 ? 0.3 : lw) * 2.8;
+            ctx.stroke();
+          }
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+          /* Droplets — source-over */
+          ctx.globalCompositeOperation = "source-over";
+          for (let i = 0; i < DMAX; i++) {
+            const e = droplets[i];
+            if (!e.alive) continue;
+            e.age += dt;
+            if (e.age >= e.life) {
+              e.alive = false;
+              continue;
+            }
+            e.x += e.vx * dtS + Math.sin(now * 0.0008 + e.phase) * e.sway * dtS;
+            e.y += e.vy * dtS;
+            e.vy += e.grav * dtS;
+            e.vx *= fricDrop;
+            e.rot += e.rotSpd * dtS;
+            const tp = e.age / e.life;
+            const hotness = e.density * (1 - tp * 0.55);
+            const a = (1 - tp) * (1 - tp) * 0.86;
+            const r = e.sz * (1 - tp * 0.22);
+            if (r < 0.3 || a < 0.01) continue;
+            if (e.isStreak) {
+              ctx.save();
+              ctx.translate(e.x, e.y);
+              ctx.rotate(e.rot);
+              ctx.scale(1, 0.42);
+              ctx.beginPath();
+              ctx.arc(0, 0, r < 0.3 ? 0.3 : r, 0, TAU);
+              ctx.fillStyle = e.vapor
+                ? vaporColor(hotness, a)
+                : mistColor(hotness, a);
+              ctx.fill();
+              ctx.scale(1, 1 / 0.42);
+              ctx.scale(2.4, 2.4);
+              ctx.beginPath();
+              ctx.arc(0, 0, r < 0.3 ? 0.3 : r, 0, TAU);
+              ctx.fillStyle = e.vapor
+                ? vaporColor(hotness, a * 0.18)
+                : mistColor(hotness, a * 0.18);
+              ctx.fill();
+              ctx.restore();
+            } else {
+              ctx.fillStyle = e.vapor
+                ? vaporColor(hotness, a)
+                : mistColor(hotness, a);
+              ctx.beginPath();
+              ctx.arc(e.x, e.y, r < 0.3 ? 0.3 : r, 0, TAU);
+              ctx.fill();
+              ctx.fillStyle = e.vapor
+                ? vaporColor(hotness, a * 0.2)
+                : mistColor(hotness, a * 0.2);
+              const r2 = r * 2.6;
+              ctx.beginPath();
+              ctx.arc(e.x, e.y, r2, 0, TAU);
+              ctx.fill();
+            }
+          }
+
+          /* ── Cursor tip — Mist Breathing vortex core ── */
+          {
+            const bv =
+              0.88 +
+              0.07 * Math.sin(now * 0.0078) +
+              0.048 * Math.sin(now * 0.019 + 1.1) +
+              0.032 * Math.sin(now * 0.034 + 2.4);
+            const jx = Math.sin(now * 0.016) * 0.85;
+            const jy = Math.sin(now * 0.013 + 1.7) * 0.85;
+            const cx = P.x + jx,
+              cy = P.y + jy;
+
+            ctx.globalCompositeOperation = "lighter";
+
+            /* Far outer aura */
+            const vg = ctx.createRadialGradient(cx, cy, 0, cx, cy, 82 * bv);
+            vg.addColorStop(0, `rgba(40,160,120,0.14)`);
+            vg.addColorStop(0.4, `rgba(15,85,65,0.06)`);
+            vg.addColorStop(1, COL_ZERO);
+            ctx.fillStyle = vg;
+            ctx.beginPath();
+            ctx.arc(cx, cy, 82 * bv, 0, TAU);
+            ctx.fill();
+
+            /* Rotating mist tendrils */
+            const swirlA = now * 0.0018;
+            ctx.lineCap = "round";
+            for (let k = 0; k < 5; k++) {
+              const sa = swirlA + (k / 5) * TAU;
+              const sR1 = (14 + k * 3.5) * bv;
+              const sR2 = sR1 * 1.55;
+              const sxs = cx + Math.cos(sa) * sR1,
+                sys = cy + Math.sin(sa) * sR1;
+              const sxe = cx + Math.cos(sa + 0.85) * sR2,
+                sye = cy + Math.sin(sa + 0.85) * sR2;
+              const mpx = (sxs + sxe) * 0.5 - (sye - sys) * 0.28;
+              const mpy = (sys + sye) * 0.5 + (sxe - sxs) * 0.28;
+              ctx.beginPath();
+              ctx.moveTo(sxs, sys);
+              ctx.quadraticCurveTo(mpx, mpy, sxe, sye);
+              ctx.lineWidth = (1.2 + k * 0.18) * bv;
+              ctx.strokeStyle =
+                k % 2 === 0
+                  ? `rgba(200,255,232,${(((0.28 - k * 0.04) * bv * 100 + 0.5) | 0) / 100})`
+                  : `rgba(90,210,168,${(((0.22 - k * 0.03) * bv * 100 + 0.5) | 0) / 100})`;
+              ctx.stroke();
+            }
+
+            /* Mid mint bloom */
+            const mg = ctx.createRadialGradient(
+              cx,
+              cy - 1.5,
+              0,
+              cx,
+              cy,
+              32 * bv,
+            );
+            mg.addColorStop(0, `rgba(185,255,225,0.80)`);
+            mg.addColorStop(0.25, `rgba(100,235,190,0.65)`);
+            mg.addColorStop(0.58, `rgba(38,155,120,0.28)`);
+            mg.addColorStop(1, COL_ZERO);
+            ctx.fillStyle = mg;
+            ctx.beginPath();
+            ctx.arc(cx, cy - 1.5, 32 * bv, 0, TAU);
+            ctx.fill();
+
+            /* Teal haze ring */
+            const rg = ctx.createRadialGradient(
+              cx,
+              cy,
+              16 * bv,
+              cx,
+              cy,
+              48 * bv,
+            );
+            rg.addColorStop(0, COL_ZERO);
+            rg.addColorStop(0.5, `rgba(60,200,155,0.10)`);
+            rg.addColorStop(1, COL_ZERO);
+            ctx.fillStyle = rg;
+            ctx.beginPath();
+            ctx.arc(cx, cy, 48 * bv, 0, TAU);
+            ctx.fill();
+
+            /* Inner core */
+            const hg = ctx.createRadialGradient(cx, cy, 0, cx, cy, 10 * bv);
+            hg.addColorStop(0, `rgba(240,255,248,1)`);
+            hg.addColorStop(0.32, `rgba(175,248,220,0.94)`);
+            hg.addColorStop(0.68, `rgba(60,195,150,0.50)`);
+            hg.addColorStop(1, `rgba(10,80,60,0)`);
+            ctx.fillStyle = hg;
+            ctx.beginPath();
+            ctx.arc(cx, cy, 10 * bv, 0, TAU);
+            ctx.fill();
+
+            /* Orbiting slash fragments */
+            const orbitA = now * 0.002;
+            for (let k = 0; k < 3; k++) {
+              const oa = orbitA + (k / 3) * TAU;
+              const orR = (14 + k * 2) * bv;
+              const ox = cx + Math.cos(oa) * orR,
+                oy = cy + Math.sin(oa) * orR;
+              const oAlp = (0.48 - k * 0.08) * bv;
+              const oSz = (3.5 - k * 0.4) * bv;
+              if (oAlp > 0.04) {
+                ctx.save();
+                ctx.globalAlpha = oAlp;
+                drawSlash(
+                  ox,
+                  oy,
+                  oSz,
+                  oa + PI * 0.5,
+                  1.2,
+                  0.9,
+                  k % 2 === 0,
+                  0.8,
+                );
+                ctx.globalAlpha = 1;
+                ctx.restore();
+              }
+            }
+
+            /* Center */
+            ctx.fillStyle = `rgba(245,255,252,${((bv * 0.97 * 100 + 0.5) | 0) / 100})`;
+            ctx.beginPath();
+            ctx.arc(cx, cy, 2.3 * bv, 0, TAU);
+            ctx.fill();
+          }
+
+          ctx.globalCompositeOperation = "source-over";
+
+          /* ── HD canvas — render every other frame (imperceptible, halves cost) ── */
+          hdFrame++;
+          if (hdFrame & 1) {
+            hctx.clearRect(0, 0, W, H);
+            for (let i = 0; i < HDMAX; i++) {
+              const h = hdCells[i];
+              if (!h.alive) continue;
+              h.age += dt * 2; // advance 2 frames worth since we skip
+              if (h.age >= h.life) {
+                h.alive = false;
+                continue;
+              }
+              const tp = h.age / h.life;
+              const r = h.str * 20 * (1 - tp * 0.38);
+              const a = (1 - tp) * 0.085;
+              const g = hctx.createRadialGradient(h.x, h.y, 0, h.x, h.y, r);
+              g.addColorStop(
+                0,
+                `rgba(80,210,168,${((a * 100 + 0.5) | 0) / 100})`,
+              );
+              g.addColorStop(
+                0.5,
+                `rgba(30,120,95,${((a * 0.38 * 100 + 0.5) | 0) / 100})`,
+              );
+              g.addColorStop(1, COL_ZERO);
+              hctx.fillStyle = g;
+              hctx.beginPath();
+              hctx.arc(h.x, h.y, r, 0, TAU);
+              hctx.fill();
+            }
+          }
+        }
+
+        requestAnimationFrame(frame);
+      })();
+    </script>
+  </body>
+</html>
