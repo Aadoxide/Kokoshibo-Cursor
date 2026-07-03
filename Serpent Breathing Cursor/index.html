@@ -1,0 +1,1245 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Serpent Breathing Cursor</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #000;
+        cursor: none;
+        font-family: "Segoe UI", system-ui, sans-serif;
+      }
+      .bg {
+        position: fixed;
+        inset: 0;
+        z-index: 0;
+        background: radial-gradient(
+          ellipse at 50% 40%,
+          #0a000f 0%,
+          #050008 40%,
+          #000 100%
+        );
+      }
+      .obanai-bg {
+        position: fixed;
+        top: -5%;
+        left: -5%;
+        width: 110%;
+        height: 110%;
+        z-index: 1;
+        background-image: url("bg.png");
+        background-size: cover;
+        background-position: center;
+        opacity: 0.90;
+        pointer-events: none;
+        will-change: transform;
+        transition: opacity 0.3s;
+      }
+      body.aura-active .obanai-bg {
+        opacity: 0.2;
+      }
+      #c {
+        position: fixed;
+        inset: 0;
+        z-index: 10;
+        pointer-events: none;
+      }
+      #hd {
+        position: fixed;
+        inset: 0;
+        z-index: 9;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="bg"></div>
+    <div class="obanai-bg" id="tbg"></div>
+    <canvas id="hd"></canvas>
+    <canvas id="c"></canvas>
+
+    <script>
+      (function () {
+        "use strict";
+
+        /* ── Canvas & DPR ── */
+        const C = document.getElementById("c");
+        const ctx = C.getContext("2d");
+        const HD = document.getElementById("hd");
+        const hctx = HD.getContext("2d");
+        let W, H, dpr;
+
+        function resize() {
+          dpr = Math.min(devicePixelRatio || 1, 2);
+          W = innerWidth;
+          H = innerHeight;
+          C.width = W * dpr;
+          C.height = H * dpr;
+          C.style.width = W + "px";
+          C.style.height = H + "px";
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          HD.width = W * dpr;
+          HD.height = H * dpr;
+          HD.style.width = W + "px";
+          HD.style.height = H + "px";
+          hctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        }
+        addEventListener("resize", resize);
+        resize();
+
+        /* ── Math helpers ── */
+        const lerp = (a, b, t) => a + (b - a) * t;
+        const rand = (a, b) => a + Math.random() * (b - a);
+        const randi = (a, b) => (a + Math.random() * (b - a)) | 0;
+        const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+        const TAU = Math.PI * 2;
+
+        /* ══════════════════════════════════════════════════
+           SERPENT BREATHING COLOR SYSTEM
+           Pearl white → silver white → cool grey → violet hiss → black shadow
+        ══════════════════════════════════════════════════ */
+
+        /* Primary LUT: deep void → silver-violet → pearl white */
+        const LUT_R = new Uint8Array(256);
+        const LUT_G = new Uint8Array(256);
+        const LUT_B = new Uint8Array(256);
+        (function () {
+          const stops = [
+            [0,   [0,   0,   0  ]],
+            [25,  [8,   4,   14 ]],
+            [60,  [40,  20,  65 ]],
+            [100, [90,  60,  130]],
+            [145, [160, 130, 200]],
+            [190, [210, 195, 235]],
+            [225, [235, 228, 248]],
+            [255, [250, 248, 255]],
+          ];
+          for (let i = 0; i < 256; i++) {
+            for (let s = 0; s < stops.length - 1; s++) {
+              const [t0, c0] = stops[s], [t1, c1] = stops[s + 1];
+              if (i >= t0 && i <= t1) {
+                const f = (i - t0) / (t1 - t0);
+                LUT_R[i] = (c0[0] + (c1[0] - c0[0]) * f) | 0;
+                LUT_G[i] = (c0[1] + (c1[1] - c0[1]) * f) | 0;
+                LUT_B[i] = (c0[2] + (c1[2] - c0[2]) * f) | 0;
+                break;
+              }
+            }
+          }
+        })();
+
+        /* Violet hiss / venom accent LUT */
+        const VLUT_R = new Uint8Array(256);
+        const VLUT_G = new Uint8Array(256);
+        const VLUT_B = new Uint8Array(256);
+        (function () {
+          const stops = [
+            [0,   [0,   0,   0  ]],
+            [40,  [20,  0,   40 ]],
+            [90,  [70,  10,  120]],
+            [145, [130, 30,  200]],
+            [195, [185, 80,  240]],
+            [235, [215, 150, 255]],
+            [255, [240, 220, 255]],
+          ];
+          for (let i = 0; i < 256; i++) {
+            for (let s = 0; s < stops.length - 1; s++) {
+              const [t0, c0] = stops[s], [t1, c1] = stops[s + 1];
+              if (i >= t0 && i <= t1) {
+                const f = (i - t0) / (t1 - t0);
+                VLUT_R[i] = (c0[0] + (c1[0] - c0[0]) * f) | 0;
+                VLUT_G[i] = (c0[1] + (c1[1] - c0[1]) * f) | 0;
+                VLUT_B[i] = (c0[2] + (c1[2] - c0[2]) * f) | 0;
+                break;
+              }
+            }
+          }
+        })();
+
+        function pearlColor(t, a) {
+          const i = clamp(t * 255, 0, 255) | 0;
+          return `rgba(${LUT_R[i]},${LUT_G[i]},${LUT_B[i]},${a})`;
+        }
+        function venomColor(t, a) {
+          const i = clamp(t * 255, 0, 255) | 0;
+          return `rgba(${VLUT_R[i]},${VLUT_G[i]},${VLUT_B[i]},${a})`;
+        }
+
+        /* ── Pointer state ── */
+        const P = {
+          x: W / 2, y: H / 2,
+          tx: W / 2, ty: H / 2,
+          px: W / 2, py: H / 2,
+          vx: 0, vy: 0,
+          speed: 0, lastMove: 0,
+        };
+        function setTarget(x, y) {
+          P.tx = x; P.ty = y;
+          P.lastMove = performance.now();
+        }
+        addEventListener("mousemove", (e) => setTarget(e.clientX, e.clientY));
+        addEventListener("touchmove", (e) => {
+          if (e.touches.length) setTarget(e.touches[0].clientX, e.touches[0].clientY);
+        }, { passive: true });
+
+        addEventListener("mousedown", (e) => {
+          document.body.classList.add("aura-active");
+          burst(e.clientX, e.clientY);
+        });
+        addEventListener("mouseup", () => document.body.classList.remove("aura-active"));
+        addEventListener("mouseleave", () => document.body.classList.remove("aura-active"));
+        addEventListener("touchstart", (e) => {
+          document.body.classList.add("aura-active");
+          if (e.touches.length) {
+            setTarget(e.touches[0].clientX, e.touches[0].clientY);
+            burst(P.tx, P.ty);
+          }
+        }, { passive: true });
+        addEventListener("touchend", () => document.body.classList.remove("aura-active"));
+
+        /* ══════════════════════════════════════════
+           LIVING SERPENT BODY SYSTEM
+        ══════════════════════════════════════════ */
+
+        /* Snake body — a chain of joints that follow the cursor like a real serpent */
+        const SNAKE_JOINTS = 60;
+        const SNAKE_BODY = [];
+        const SNAKE_BASE_RADII = [];
+        for (let i = 0; i < SNAKE_JOINTS; i++) {
+          /* Taper: head is widest (~10px), tail narrows to ~1.5px */
+          const t = i / (SNAKE_JOINTS - 1);
+          const r = lerp(9.5, 1.5, Math.pow(t, 0.7));
+          SNAKE_BASE_RADII.push(r);
+          SNAKE_BODY.push({ x: W / 2, y: H / 2, angle: 0 });
+        }
+
+        /* Slither sinusoidal offset */
+        let snakePhase = 0;
+
+        /* ── Orbiting micro-snake coil ── */
+        const COIL_JOINTS = 20;
+        const COIL = [];
+        for (let i = 0; i < COIL_JOINTS; i++) COIL.push({ x: W / 2, y: H / 2 });
+        let coilPhase = 0;
+
+        /* ══════════════════════════════════════════
+           PARTICLE POOLS
+        ══════════════════════════════════════════ */
+
+        /* — Scale shards (tiny diamond/oval scales shed during movement) — */
+        const SMAX = 480;
+        const scales = [];
+        for (let i = 0; i < SMAX; i++) scales.push({ alive: false });
+        let scHead = 0;
+        function spawnScale(x, y, vx, vy, life, sz, hot, venom) {
+          const e = scales[scHead % SMAX];
+          scHead++;
+          e.alive = true; e.x = x; e.y = y; e.vx = vx; e.vy = vy;
+          e.age = 0; e.life = life; e.sz = sz; e.hot = hot;
+          e.sway = rand(0.2, 1.1); e.phase = rand(0, TAU);
+          e.grav = rand(12, 55); e.venom = venom || false;
+          e.rot = rand(0, TAU); e.rotSpd = rand(-3, 3);
+        }
+
+        /* — Venom wisps (violet-white mist puffs) — */
+        const VMAX = 300;
+        const venomMist = [];
+        for (let i = 0; i < VMAX; i++) venomMist.push({ alive: false });
+        let vmHead = 0;
+        function spawnVenomMist(x, y, vx, vy, r, life, hot) {
+          const s = venomMist[vmHead % VMAX];
+          vmHead++;
+          s.alive = true; s.x = x; s.y = y; s.vx = vx; s.vy = vy;
+          s.age = 0; s.life = life; s.r = r; s.hot = hot;
+          s.wave = rand(0, TAU); s.waveSpd = rand(1.5, 4.5);
+        }
+
+        /* — Serpent energy puffs — */
+        const FMAX = 340;
+        const serpPuffs = [];
+        for (let i = 0; i < FMAX; i++) serpPuffs.push({ alive: false });
+        let fHead = 0;
+        function spawnPuff(x, y, vx, vy, r, life, hot, venom) {
+          const f = serpPuffs[fHead % FMAX];
+          fHead++;
+          f.alive = true; f.x = x; f.y = y; f.vx = vx; f.vy = vy;
+          f.age = 0; f.life = life; f.r = r; f.hot = hot;
+          f.venom = venom || false;
+        }
+
+        /* — Strike fangs (long thin streaks fired outward on click) — */
+        const FANGMAX = 160;
+        const fangs = [];
+        for (let i = 0; i < FANGMAX; i++) fangs.push({ alive: false });
+        let fangHead = 0;
+        function spawnFang(x, y, angle, speed, len, life, hot, venom) {
+          const f = fangs[fangHead % FANGMAX];
+          fangHead++;
+          f.alive = true; f.x = x; f.y = y;
+          f.vx = Math.cos(angle) * speed; f.vy = Math.sin(angle) * speed;
+          f.angle = angle; f.len = len;
+          
+          f.age = 0; f.life = life; f.hot = hot;
+          f.venom = venom || false;
+          f.spin = rand(-1.5, 1.5);
+        }
+
+        /* — Void sparks (thin silver streaks) — */
+        const SPKMAX = 420;
+        const sparks = [];
+        for (let i = 0; i < SPKMAX; i++) sparks.push({ alive: false, px: 0, py: 0 });
+        let spkHead = 0;
+        function spawnSpark(x, y, vx, vy, life, bright, venom) {
+          const s = sparks[spkHead % SPKMAX];
+          spkHead++;
+          s.alive = true; s.x = x; s.y = y; s.px = x; s.py = y;
+          s.vx = vx; s.vy = vy;
+          s.age = 0; s.life = life; s.bright = bright;
+          s.venom = venom || false;
+        }
+
+        /* — Shockwaves & flashes — */
+        const waves = [];
+        const flashes = [];
+
+        /* — Ambient glow cells — */
+        const HDMAX = 200;
+        const hdCells = [];
+        for (let i = 0; i < HDMAX; i++) hdCells.push({ alive: false });
+        let hdHead = 0;
+        function spawnHD(x, y, str, life) {
+          const h = hdCells[hdHead % HDMAX];
+          hdHead++;
+          h.alive = true; h.x = x; h.y = y; h.str = str; h.age = 0; h.life = life;
+        }
+
+        /* — Trail points (used for serpent undulation history) — */
+        const TMAX = 90;
+        const trail = [];
+
+        /* ══════════════════════════════════════════
+           DRAW PRIMITIVES
+        ══════════════════════════════════════════ */
+
+        /* Diamond/oval scale shape at (cx, cy) rotated by angle, size sz */
+        function drawScaleShape(cx, cy, sz, angle) {
+          ctx.save();
+          ctx.translate(cx, cy);
+          ctx.rotate(angle);
+          ctx.scale(1, 0.52);
+          ctx.beginPath();
+          ctx.arc(0, 0, sz, 0, TAU);
+          ctx.restore();
+        }
+
+        /* Fang tip — thin elongated teardrop */
+        function drawFangShape(cx, cy, len, width, angle) {
+          ctx.save();
+          ctx.translate(cx, cy);
+          ctx.rotate(angle);
+          ctx.beginPath();
+          ctx.moveTo(0, 0);
+          ctx.bezierCurveTo(width * 0.6, -len * 0.2, width * 0.3, -len * 0.7, 0, -len);
+          ctx.bezierCurveTo(-width * 0.3, -len * 0.7, -width * 0.6, -len * 0.2, 0, 0);
+          ctx.closePath();
+          ctx.restore();
+        }
+
+        /* ══════════════════════════════════════════
+           SERPENT BODY DRAW
+        ══════════════════════════════════════════ */
+
+        function drawSnakeBody(now, dtS) {
+          if (SNAKE_BODY.length < 2) return;
+
+          /* Update chain: each joint chases the one ahead of it */
+          const FOLLOW_DIST = 7.5;
+          /* Joint 0 chases the cursor smoothly */
+          SNAKE_BODY[0].x = lerp(SNAKE_BODY[0].x, P.x, 0.22);
+          SNAKE_BODY[0].y = lerp(SNAKE_BODY[0].y, P.y, 0.22);
+
+          for (let i = 1; i < SNAKE_JOINTS; i++) {
+            const prev = SNAKE_BODY[i - 1];
+            const cur = SNAKE_BODY[i];
+            const dx = cur.x - prev.x;
+            const dy = cur.y - prev.y;
+            const dist = Math.hypot(dx, dy) || 0.001;
+            if (dist > FOLLOW_DIST) {
+              const pull = (dist - FOLLOW_DIST) / dist;
+              cur.x -= dx * pull * 0.62;
+              cur.y -= dy * pull * 0.62;
+            }
+            cur.angle = Math.atan2(cur.y - prev.y, cur.x - prev.x);
+          }
+
+          snakePhase += dtS * 3.8;
+
+          /* ── Draw body segments from tail to head ── */
+          for (let i = SNAKE_JOINTS - 1; i >= 0; i--) {
+            const joint = SNAKE_BODY[i];
+            const t = i / (SNAKE_JOINTS - 1);
+            const baseR = SNAKE_BASE_RADII[i];
+
+            /* Sinusoidal breathing pulse */
+            const breathPulse = 1 + 0.045 * Math.sin(now * 0.008 + i * 0.18);
+            const r = baseR * breathPulse;
+
+            /* Segment alpha: tail fades out */
+            const alpha = clamp(1 - Math.pow(t, 1.6), 0.0, 1.0);
+            if (alpha < 0.02) continue;
+
+            /* Angle from previous joint for perpendicular cross-section */
+            let segAngle = 0;
+            if (i > 0) {
+              segAngle = SNAKE_BODY[i - 1].angle;
+            } else {
+              segAngle = Math.atan2(P.y - SNAKE_BODY[0].y, P.x - SNAKE_BODY[0].x);
+            }
+
+            /* ── Outer shadow shell (depth / underside darkness) ── */
+            if (r > 1.5) {
+              const shadowG = ctx.createRadialGradient(
+                joint.x + Math.sin(segAngle) * r * 0.35,
+                joint.y - Math.cos(segAngle) * r * 0.35,
+                0,
+                joint.x, joint.y, r * 2.1
+              );
+              shadowG.addColorStop(0, `rgba(0,0,0,${alpha * 0.42})`);
+              shadowG.addColorStop(1, "rgba(0,0,0,0)");
+              ctx.fillStyle = shadowG;
+              ctx.beginPath();
+              ctx.arc(joint.x, joint.y, r * 2.1, 0, TAU);
+              ctx.fill();
+            }
+
+            /* ── Body gradient: pearl-silver with dark belly stripe ── */
+            const bodyG = ctx.createRadialGradient(
+              joint.x - Math.sin(segAngle) * r * 0.3,
+              joint.y + Math.cos(segAngle) * r * 0.3,
+              0,
+              joint.x, joint.y, r
+            );
+            /* Dorsal highlight */
+            bodyG.addColorStop(0,   `rgba(250,248,255,${alpha * 0.98})`);
+            bodyG.addColorStop(0.18, `rgba(235,228,248,${alpha * 0.95})`);
+            bodyG.addColorStop(0.45, `rgba(195,182,225,${alpha * 0.88})`);
+            bodyG.addColorStop(0.72, `rgba(140,115,175,${alpha * 0.72})`);
+            bodyG.addColorStop(0.88, `rgba(60,30,90,${alpha * 0.55})`);
+            bodyG.addColorStop(1,   `rgba(8,3,15,${alpha * 0.35})`);
+            ctx.globalCompositeOperation = "lighter";
+            ctx.fillStyle = bodyG;
+            ctx.beginPath();
+            ctx.arc(joint.x, joint.y, r, 0, TAU);
+            ctx.fill();
+
+            /* ── Scale texture overlay (every 3rd segment) ── */
+            if (i % 3 === 0 && r > 3) {
+              const scaleAlpha = alpha * 0.22 * (1 - t * 0.5);
+              ctx.globalCompositeOperation = "source-over";
+              const perpX = Math.cos(segAngle + Math.PI / 2);
+              const perpY = Math.sin(segAngle + Math.PI / 2);
+              /* Two side scales per row */
+              for (let side = -1; side <= 1; side += 2) {
+                const sx = joint.x + perpX * r * 0.55 * side;
+                const sy = joint.y + perpY * r * 0.55 * side;
+                const sg = ctx.createRadialGradient(sx, sy, 0, sx, sy, r * 0.6);
+                sg.addColorStop(0, `rgba(255,255,255,${scaleAlpha * 0.9})`);
+                sg.addColorStop(0.5, `rgba(210,200,240,${scaleAlpha * 0.5})`);
+                sg.addColorStop(1, `rgba(80,50,120,0)`);
+                ctx.fillStyle = sg;
+                ctx.save();
+                ctx.translate(sx, sy);
+                ctx.rotate(segAngle + Math.PI / 2);
+                ctx.scale(1, 0.45);
+                ctx.beginPath();
+                ctx.arc(0, 0, r * 0.55, 0, TAU);
+                ctx.fill();
+                ctx.restore();
+              }
+              ctx.globalCompositeOperation = "lighter";
+
+              /* Dorsal ridge highlight */
+              const ridgeAlpha = alpha * 0.18 * (1 - t * 0.6);
+              const ridgeG = ctx.createRadialGradient(
+                joint.x - Math.sin(segAngle) * r * 0.1,
+                joint.y + Math.cos(segAngle) * r * 0.1,
+                0,
+                joint.x, joint.y, r * 0.4
+              );
+              ridgeG.addColorStop(0, `rgba(255,255,255,${ridgeAlpha * 1.4})`);
+              ridgeG.addColorStop(1, "rgba(255,255,255,0)");
+              ctx.fillStyle = ridgeG;
+              ctx.beginPath();
+              ctx.arc(joint.x, joint.y, r * 0.4, 0, TAU);
+              ctx.fill();
+            }
+
+            /* ── Violet venom shimmer on leading segments ── */
+            if (i < 10) {
+              const vt = 1 - i / 10;
+              const vg = ctx.createRadialGradient(joint.x, joint.y, 0, joint.x, joint.y, r * 1.8);
+              vg.addColorStop(0, `rgba(160,80,255,${alpha * vt * 0.14})`);
+              vg.addColorStop(1, "rgba(0,0,0,0)");
+              ctx.fillStyle = vg;
+              ctx.beginPath();
+              ctx.arc(joint.x, joint.y, r * 1.8, 0, TAU);
+              ctx.fill();
+            }
+          }
+
+          /* ── Snake head — detailed with eyes and fangs ── */
+          const head = SNAKE_BODY[0];
+          const headAngle = Math.atan2(P.y - head.y, P.x - head.x);
+          const headR = SNAKE_BASE_RADII[0] * (1 + 0.045 * Math.sin(now * 0.008));
+
+          ctx.globalCompositeOperation = "lighter";
+
+          /* Head glow aura */
+          const headAuraG = ctx.createRadialGradient(head.x, head.y, 0, head.x, head.y, headR * 3.5);
+          headAuraG.addColorStop(0, `rgba(220,200,255,0.22)`);
+          headAuraG.addColorStop(0.4, `rgba(130,60,220,0.09)`);
+          headAuraG.addColorStop(1, "rgba(0,0,0,0)");
+          ctx.fillStyle = headAuraG;
+          ctx.beginPath();
+          ctx.arc(head.x, head.y, headR * 3.5, 0, TAU);
+          ctx.fill();
+
+          /* Head main body - slightly elongated in travel direction */
+          ctx.save();
+          ctx.translate(head.x, head.y);
+          ctx.rotate(headAngle);
+          ctx.scale(1.22, 1);
+
+          const headBodyG = ctx.createRadialGradient(-headR * 0.12, -headR * 0.18, 0, 0, 0, headR);
+          headBodyG.addColorStop(0,   "rgba(255,252,255,1.0)");
+          headBodyG.addColorStop(0.22, "rgba(240,232,255,0.97)");
+          headBodyG.addColorStop(0.52, "rgba(190,165,230,0.90)");
+          headBodyG.addColorStop(0.78, "rgba(100,60,160,0.75)");
+          headBodyG.addColorStop(1,   "rgba(20,5,40,0.5)");
+          ctx.fillStyle = headBodyG;
+          ctx.beginPath();
+          ctx.arc(0, 0, headR, 0, TAU);
+          ctx.fill();
+          ctx.restore();
+
+          /* Eyes — slit pupils, yellow-gold iris */
+          ctx.globalCompositeOperation = "lighter";
+          const eyeOffset = headR * 0.42;
+          const eyePerp = headAngle + Math.PI / 2;
+          const eyeForward = headR * 0.28;
+
+          for (let side = -1; side <= 1; side += 2) {
+            const ex = head.x + Math.cos(headAngle) * eyeForward + Math.cos(eyePerp) * eyeOffset * side;
+            const ey = head.y + Math.sin(headAngle) * eyeForward + Math.sin(eyePerp) * eyeOffset * side;
+            const eyeR = headR * 0.34;
+
+            /* Eye iris glow */
+            const eyeG = ctx.createRadialGradient(ex, ey, 0, ex, ey, eyeR * 1.8);
+            eyeG.addColorStop(0, "rgba(255,220,60,0.95)");
+            eyeG.addColorStop(0.35, "rgba(200,140,20,0.7)");
+            eyeG.addColorStop(0.7, "rgba(140,60,0,0.4)");
+            eyeG.addColorStop(1, "rgba(0,0,0,0)");
+            ctx.fillStyle = eyeG;
+            ctx.beginPath();
+            ctx.arc(ex, ey, eyeR * 1.8, 0, TAU);
+            ctx.fill();
+
+            /* Iris */
+            ctx.globalCompositeOperation = "source-over";
+            ctx.fillStyle = "rgba(200,140,10,0.92)";
+            ctx.beginPath();
+            ctx.arc(ex, ey, eyeR * 0.82, 0, TAU);
+            ctx.fill();
+
+            /* Vertical slit pupil */
+            ctx.fillStyle = "rgba(0,0,0,0.98)";
+            ctx.save();
+            ctx.translate(ex, ey);
+            ctx.rotate(headAngle);
+            ctx.scale(0.24, 1);
+            ctx.beginPath();
+            ctx.arc(0, 0, eyeR * 0.72, 0, TAU);
+            ctx.fill();
+            ctx.restore();
+
+            /* Eye specular highlight */
+            ctx.globalCompositeOperation = "lighter";
+            ctx.fillStyle = "rgba(255,255,255,0.85)";
+            ctx.beginPath();
+            ctx.arc(ex - headR * 0.06, ey - headR * 0.06, eyeR * 0.2, 0, TAU);
+            ctx.fill();
+          }
+
+          ctx.globalCompositeOperation = "lighter";
+
+          /* Tongue flicker — forked, pearl-white with violet tip */
+          const tonguePhase = now * 0.012;
+          const tongueBase = headR * 0.85;
+          const tongueLen = headR * (1.6 + 0.4 * Math.sin(tonguePhase));
+          const tx0 = head.x + Math.cos(headAngle) * tongueBase;
+          const ty0 = head.y + Math.sin(headAngle) * tongueBase;
+          const forkSpread = headR * 0.38;
+          const forkAngleL = headAngle + 0.22;
+          const forkAngleR = headAngle - 0.22;
+          const txL = tx0 + Math.cos(forkAngleL) * tongueLen;
+          const tyL = ty0 + Math.sin(forkAngleL) * tongueLen;
+          const txR = tx0 + Math.cos(forkAngleR) * tongueLen;
+          const tyR = ty0 + Math.sin(forkAngleR) * tongueLen;
+
+          /* Only show tongue when slow or idle — retract at high speed */
+          const tongueAlpha = clamp(1 - P.speed / 250, 0, 1) * 0.82;
+          if (tongueAlpha > 0.05) {
+            ctx.lineWidth = 1.2;
+            ctx.lineCap = "round";
+            ctx.strokeStyle = `rgba(235,225,255,${tongueAlpha})`;
+            ctx.beginPath();
+            ctx.moveTo(tx0, ty0);
+            ctx.lineTo(txL, tyL);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(tx0, ty0);
+            ctx.lineTo(txR, tyR);
+            ctx.stroke();
+            /* Violet forked tips */
+            ctx.fillStyle = `rgba(190,80,255,${tongueAlpha * 0.9})`;
+            ctx.beginPath(); ctx.arc(txL, tyL, 1.6, 0, TAU); ctx.fill();
+            ctx.beginPath(); ctx.arc(txR, tyR, 1.6, 0, TAU); ctx.fill();
+            /* Tongue glow */
+            const tgG = ctx.createRadialGradient(tx0, ty0, 0, tx0, ty0, tongueLen * 0.8);
+            tgG.addColorStop(0, `rgba(200,150,255,${tongueAlpha * 0.15})`);
+            tgG.addColorStop(1, "rgba(0,0,0,0)");
+            ctx.fillStyle = tgG;
+            ctx.beginPath();
+            ctx.arc(tx0, ty0, tongueLen * 0.8, 0, TAU);
+            ctx.fill();
+          }
+        }
+
+        /* ── Orbiting coil around cursor ── */
+        function drawCoil(now, dtS) {
+          coilPhase += dtS * 1.85;
+          const coilR = 22 + 5 * Math.sin(now * 0.007);
+          const headX = P.x, headY = P.y;
+
+          for (let i = 0; i < COIL_JOINTS; i++) {
+            const t = i / (COIL_JOINTS - 1);
+            const a = coilPhase + t * TAU * 1.3;
+            const r = coilR * (1 - t * 0.45);
+            const targetX = headX + Math.cos(a) * r;
+            const targetY = headY + Math.sin(a) * r;
+            COIL[i].x = lerp(COIL[i].x, targetX, 0.25);
+            COIL[i].y = lerp(COIL[i].y, targetY, 0.25);
+          }
+
+          /* Draw coil as overlapping circles */
+          for (let i = COIL_JOINTS - 1; i >= 0; i--) {
+            const t = i / (COIL_JOINTS - 1);
+            const coilSegR = lerp(3.8, 0.8, t);
+            const alpha = clamp(1 - t * 0.7, 0, 1) * 0.78;
+            if (alpha < 0.02) continue;
+
+            const cg = ctx.createRadialGradient(
+              COIL[i].x - coilSegR * 0.3,
+              COIL[i].y - coilSegR * 0.3,
+              0,
+              COIL[i].x, COIL[i].y, coilSegR
+            );
+            cg.addColorStop(0, `rgba(255,252,255,${alpha})`);
+            cg.addColorStop(0.45, `rgba(210,195,240,${alpha * 0.85})`);
+            cg.addColorStop(0.8, `rgba(100,60,160,${alpha * 0.55})`);
+            cg.addColorStop(1, "rgba(0,0,0,0)");
+            ctx.fillStyle = cg;
+            ctx.beginPath();
+            ctx.arc(COIL[i].x, COIL[i].y, coilSegR, 0, TAU);
+            ctx.fill();
+          }
+        }
+
+        /* ══════════════════════════════════════════
+           BURST — Serpent Breathing: First Form — Slithering Fang Thrust
+        ══════════════════════════════════════════ */
+        function burst(x, y) {
+          waves.push({ x, y, r: 0, maxR: rand(200, 320), age: 0, life: 700 });
+          flashes.push({ x, y, r: 0, maxR: rand(280, 420), age: 0, life: 580 });
+
+          /* Fang strike arcs — fast, thin, serpentine */
+          const FANGS = 22;
+          for (let i = 0; i < FANGS; i++) {
+            const a = (i / FANGS) * TAU + rand(-0.1, 0.1);
+            const spd = rand(160, 440);
+            const isVenom = Math.random() < 0.38;
+            spawnFang(x, y, a, spd, rand(16, 40), rand(380, 780), rand(0.7, 1.0), isVenom);
+            spawnPuff(
+              x, y,
+              Math.cos(a) * spd * 0.45, Math.sin(a) * spd * 0.45,
+              rand(18, 44), rand(300, 650), rand(0.6, 1.0), isVenom
+            );
+            if (i % 2 === 0)
+              spawnVenomMist(
+                x + rand(-8, 8), y + rand(-8, 8),
+                Math.cos(a) * spd * 0.16, Math.sin(a) * spd * 0.16 - rand(22, 52),
+                rand(18, 34), rand(540, 860), rand(0.5, 0.9)
+              );
+          }
+
+          /* Extra close-range fang cluster */
+          for (let i = 0; i < 12; i++) {
+            const a = rand(0, TAU), spd = rand(50, 150);
+            spawnFang(
+              x + rand(-10, 10), y + rand(-10, 10),
+              a, spd, rand(8, 20), rand(400, 700), rand(0.6, 0.95),
+              Math.random() < 0.45
+            );
+          }
+
+          /* Void sparks — silver and violet mix */
+          for (let i = 0; i < 160; i++) {
+            const a = rand(0, TAU), spd = rand(80, 520);
+            spawnSpark(
+              x, y, Math.cos(a) * spd, Math.sin(a) * spd,
+              rand(280, 950), rand(0.7, 1.0), Math.random() < 0.32
+            );
+          }
+
+          /* Shed scales burst */
+          for (let i = 0; i < 110; i++) {
+            const a = rand(0, TAU), spd = rand(30, 220);
+            spawnScale(
+              x, y,
+              Math.cos(a) * spd, Math.sin(a) * spd - rand(35, 110),
+              rand(450, 1200), rand(1.4, 3.5),
+              rand(0.5, 1.0), Math.random() < 0.28
+            );
+          }
+
+          spawnHD(x, y, rand(10, 16), rand(600, 1000));
+        }
+
+        /* ── Trail helpers ── */
+        function addTrail(x, y, t) {
+          if (trail.length >= TMAX) trail.shift();
+          trail.push({ x, y, t });
+        }
+
+        /* ══════════════════════════════════════════
+           MAIN LOOP
+        ══════════════════════════════════════════ */
+        let last = performance.now();
+        let ambE = 0, ambF = 0, ambHD = 0, ambC = 0;
+
+        function frame(now) {
+          requestAnimationFrame(frame);
+          const dt = Math.min(now - last, 33);
+          last = now;
+          const dtS = dt * 0.001;
+
+          /* Pointer tracking */
+          P.px = P.x; P.py = P.y;
+          const ease = 1 - Math.pow(0.001, dtS * 5);
+          P.x = lerp(P.x, P.tx, ease);
+          P.y = lerp(P.y, P.ty, ease);
+          P.vx = (P.x - P.px) / Math.max(dtS, 0.001);
+          P.vy = (P.y - P.py) / Math.max(dtS, 0.001);
+          P.speed = Math.hypot(P.vx, P.vy);
+
+          /* Parallax bg */
+          const bx = (P.tx / W - 0.5) * -32;
+          const by = (P.ty / H - 0.5) * -32;
+          document.getElementById("tbg").style.transform =
+            `translate(${bx}px,${by}px) scale(1.08)`;
+
+          /* Trail */
+          addTrail(P.x, P.y, now);
+          while (trail.length && now - trail[0].t > 360) trail.shift();
+
+          const idle = now - P.lastMove;
+          const moving = idle < 120;
+          const speedFactor = clamp(P.speed / 300, 0, 1);
+
+          /* ── Ambient scale mote emission ── */
+          ambE -= dt;
+          if (ambE <= 0) {
+            ambE = moving ? rand(9, 24) : rand(30, 60);
+            const n = moving ? randi(2, 5) : 1;
+            for (let i = 0; i < n; i++) {
+              const a = -Math.PI / 2 + rand(-1.0, 1.0);
+              const spd = rand(14, 70) * (1 + speedFactor * 1.9);
+              spawnScale(
+                P.x + rand(-5, 5), P.y + rand(-5, 5),
+                Math.cos(a) * spd, Math.sin(a) * spd - rand(12, 42),
+                rand(650, 1500), rand(0.9, 2.5),
+                rand(0.4, 0.9), Math.random() < 0.12
+              );
+            }
+          }
+
+          /* ── Ambient serpent puff emission ── */
+          ambF -= dt;
+          if (ambF <= 0) {
+            ambF = moving ? rand(10, 26) : rand(32, 66);
+            const n = moving ? randi(2, 6) : randi(1, 3);
+            for (let i = 0; i < n; i++) {
+              const a = -Math.PI / 2 + rand(-1.1, 1.1);
+              const spd = rand(11, 64) * (1 + speedFactor * 1.4);
+              spawnPuff(
+                P.x + rand(-6, 6), P.y + rand(-6, 6),
+                Math.cos(a) * spd * 0.44, Math.sin(a) * spd - rand(8, 36),
+                rand(8, 24) * (1 + speedFactor * 0.7),
+                rand(150, 360), rand(0.4, 1.0),
+                Math.random() < 0.1
+              );
+            }
+            if (Math.random() < (moving ? 0.32 : 0.07))
+              spawnVenomMist(
+                P.x + rand(-8, 8), P.y - 8,
+                rand(-11, 11), rand(-32, -10),
+                rand(11, 22), rand(360, 640), rand(0.4, 0.85)
+              );
+          }
+
+          /* ── Ambient subtle fang tips at idle ── */
+          ambC -= dt;
+          if (ambC <= 0) {
+            ambC = moving ? rand(70, 160) : rand(220, 440);
+            if (Math.random() < (moving ? 0.55 : 0.15)) {
+              const a = -Math.PI / 2 + rand(-1.4, 1.4);
+              spawnFang(
+                P.x + rand(-8, 8), P.y + rand(-8, 8),
+                a, rand(18, 65),
+                rand(5, 14), rand(320, 660),
+                rand(0.5, 0.9), Math.random() < 0.18
+              );
+            }
+          }
+
+          ambHD -= dt;
+          if (ambHD <= 0) {
+            ambHD = rand(85, 165);
+            spawnHD(P.x + rand(-16, 16), P.y + rand(-16, 16), rand(3, 6), rand(175, 360));
+          }
+
+          /* ── Movement-triggered emission ── */
+          if (moving && P.speed > 20) {
+            const n = clamp((P.speed / 100) | 0, 1, 6);
+            for (let i = 0; i < n; i++) {
+              const t = Math.random();
+              const sx = lerp(P.px, P.x, t), sy = lerp(P.py, P.y, t);
+              const a = -Math.PI / 2 + rand(-1.2, 1.2);
+              const spd = rand(26, 95) + speedFactor * 55;
+              const isVenom = Math.random() < 0.12;
+              spawnPuff(
+                sx + rand(-4, 4), sy + rand(-4, 4),
+                P.vx * 0.1 + Math.cos(a) * spd * 0.4,
+                -Math.abs(Math.sin(a) * spd) - rand(15, 46),
+                rand(7, 19), rand(130, 300), rand(0.6, 1.0), isVenom
+              );
+              if (Math.random() < 0.44)
+                spawnScale(
+                  sx, sy,
+                  P.vx * 0.07 + rand(-33, 33), -rand(32, 115),
+                  rand(440, 1050), rand(0.9, 2.3),
+                  rand(0.5, 1.0), isVenom
+                );
+              if (P.speed > 120 && Math.random() < 0.27)
+                spawnSpark(
+                  sx, sy,
+                  P.vx * 0.18 + rand(-66, 66), P.vy * 0.18 + rand(-66, 66),
+                  rand(160, 440), 0.88, isVenom
+                );
+              /* Fangs on fast sweeps */
+              if (P.speed > 160 && Math.random() < 0.24) {
+                const fa = Math.atan2(P.vy, P.vx) + rand(-0.5, 0.5);
+                spawnFang(
+                  sx, sy, fa, rand(55, 155),
+                  rand(7, 18), rand(220, 520),
+                  rand(0.7, 1.0), Math.random() < 0.2
+                );
+              }
+            }
+          }
+
+          /* ═══════════ DRAW ═══════════ */
+          ctx.clearRect(0, 0, W, H);
+          ctx.globalCompositeOperation = "lighter";
+
+          /* ── Flashes — pearl-violet bloom ── */
+          for (let i = flashes.length - 1; i >= 0; i--) {
+            const f = flashes[i];
+            f.age += dt;
+            if (f.age >= f.life) { flashes.splice(i, 1); continue; }
+            const tp = f.age / f.life;
+            const r = lerp(0, f.maxR, Math.pow(tp, 0.28));
+            const a = (1 - tp) * (1 - tp) * 0.32;
+            const g = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, r);
+            g.addColorStop(0, `rgba(248,240,255,${a})`);
+            g.addColorStop(0.22, `rgba(200,160,255,${a * 0.82})`);
+            g.addColorStop(0.5, `rgba(120,40,200,${a * 0.5})`);
+            g.addColorStop(0.78, `rgba(40,8,80,${a * 0.26})`);
+            g.addColorStop(1, "rgba(0,0,0,0)");
+            ctx.fillStyle = g;
+            ctx.beginPath();
+            ctx.arc(f.x, f.y, r, 0, TAU);
+            ctx.fill();
+          }
+
+          /* ── Shockwaves — pearl rings with violet core ── */
+          for (let i = waves.length - 1; i >= 0; i--) {
+            const w = waves[i];
+            w.age += dt;
+            if (w.age >= w.life) { waves.splice(i, 1); continue; }
+            const tp = w.age / w.life;
+            const r = lerp(0, w.maxR, Math.pow(tp, 0.5));
+            const a = (1 - tp) * (1 - tp) * 0.8;
+            const lw = lerp(7, 0.4, tp);
+
+            ctx.beginPath();
+            ctx.arc(w.x, w.y, r, 0, TAU);
+            ctx.lineWidth = lw;
+            ctx.strokeStyle = `rgba(220,210,255,${a})`;
+            ctx.stroke();
+
+            ctx.lineWidth = lw * 3;
+            ctx.strokeStyle = `rgba(110,40,200,${a * 0.34})`;
+            ctx.stroke();
+
+            if (tp < 0.44) {
+              const r2 = lerp(0, w.maxR * 0.42, tp / 0.44);
+              ctx.beginPath();
+              ctx.arc(w.x, w.y, r2, 0, TAU);
+              ctx.lineWidth = lw * 0.6;
+              ctx.strokeStyle = `rgba(255,240,255,${a * 0.6})`;
+              ctx.stroke();
+            }
+          }
+
+          /* ── Venom mist (drawn under energy) ── */
+          ctx.globalCompositeOperation = "source-over";
+          for (let i = 0; i < VMAX; i++) {
+            const s = venomMist[i];
+            if (!s.alive) continue;
+            s.age += dt;
+            if (s.age >= s.life) { s.alive = false; continue; }
+            s.wave += s.waveSpd * dtS;
+            s.x += (s.vx + Math.sin(s.wave) * 14) * dtS;
+            s.y += s.vy * dtS;
+            s.vy -= dtS * 5;
+            const tp = s.age / s.life;
+            const r = s.r * (1 + tp * 1.3);
+            const a = (1 - tp) * 0.12 * Math.sin(tp * Math.PI);
+            const g = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, Math.max(1, r));
+            g.addColorStop(0, `rgba(180,140,255,${a * s.hot})`);
+            g.addColorStop(0.5, `rgba(80,30,140,${a * s.hot * 0.5})`);
+            g.addColorStop(1, "rgba(0,0,0,0)");
+            ctx.fillStyle = g;
+            ctx.beginPath();
+            ctx.arc(s.x, s.y, Math.max(1, r), 0, TAU);
+            ctx.fill();
+          }
+
+          /* ── Serpent energy puffs ── */
+          ctx.globalCompositeOperation = "lighter";
+          for (let i = 0; i < FMAX; i++) {
+            const f = serpPuffs[i];
+            if (!f.alive) continue;
+            f.age += dt;
+            if (f.age >= f.life) { f.alive = false; continue; }
+            f.x += f.vx * dtS;
+            f.y += f.vy * dtS;
+            f.vy -= dtS * 42;
+            f.vx *= Math.pow(0.96, dtS * 60);
+            f.vx += Math.sin(now * 0.006 + f.age * 0.009) * dtS * 26;
+            const tp = f.age / f.life;
+            const hotness = f.hot * (1 - tp);
+            const r = f.r * (1 + tp * 0.3);
+            const a = Math.sin(tp * Math.PI) * 0.66 * f.hot;
+            const g = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, Math.max(1, r));
+            if (f.venom) {
+              g.addColorStop(0, venomColor(hotness, a));
+              g.addColorStop(0.45, venomColor(hotness * 0.6, a * 0.65));
+              g.addColorStop(0.82, venomColor(hotness * 0.28, a * 0.25));
+            } else {
+              g.addColorStop(0, pearlColor(hotness, a));
+              g.addColorStop(0.45, pearlColor(hotness * 0.6, a * 0.65));
+              g.addColorStop(0.82, pearlColor(hotness * 0.28, a * 0.25));
+            }
+            g.addColorStop(1, "rgba(0,0,0,0)");
+            ctx.fillStyle = g;
+            ctx.beginPath();
+            ctx.arc(f.x, f.y, Math.max(1, r), 0, TAU);
+            ctx.fill();
+          }
+
+          /* ── Fang streaks ── */
+          for (let i = 0; i < FANGMAX; i++) {
+            const f = fangs[i];
+            if (!f.alive) continue;
+            f.age += dt;
+            if (f.age >= f.life) { f.alive = false; continue; }
+            f.x += f.vx * dtS;
+            f.y += f.vy * dtS;
+            f.vy -= dtS * 30;
+            f.vx *= Math.pow(0.97, dtS * 60);
+            f.vx += Math.sin(now * 0.005 + f.age * 0.008) * dtS * 20;
+            f.angle += f.spin * dtS;
+            const tp = f.age / f.life;
+            const hotness = f.hot * (1 - tp);
+            const len = f.len * (1 - tp * 0.3);
+            const a = Math.sin(tp * Math.PI) * 0.82 * f.hot;
+            if (a < 0.02) continue;
+
+            /* Glow aura */
+            const gr = len * 1.5;
+            const gg = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, gr);
+            if (f.venom) {
+              gg.addColorStop(0, venomColor(hotness, a * 0.42));
+              gg.addColorStop(1, "rgba(0,0,0,0)");
+            } else {
+              gg.addColorStop(0, pearlColor(hotness, a * 0.38));
+              gg.addColorStop(1, "rgba(0,0,0,0)");
+            }
+            ctx.fillStyle = gg;
+            ctx.beginPath();
+            ctx.arc(f.x, f.y, gr, 0, TAU);
+            ctx.fill();
+
+            /* Fang shape */
+            const fangW = len * 0.22;
+            drawFangShape(f.x, f.y, len, fangW, f.angle);
+            const fg = ctx.createLinearGradient(
+              f.x, f.y,
+              f.x + Math.cos(f.angle) * (-len),
+              f.y + Math.sin(f.angle) * (-len)
+            );
+            if (f.venom) {
+              fg.addColorStop(0, venomColor(1.0, a));
+              fg.addColorStop(0.5, venomColor(0.7, a * 0.7));
+              fg.addColorStop(1, venomColor(0.35, a * 0.2));
+            } else {
+              fg.addColorStop(0, pearlColor(1.0, a));
+              fg.addColorStop(0.5, pearlColor(0.75, a * 0.7));
+              fg.addColorStop(1, pearlColor(0.35, a * 0.2));
+            }
+            ctx.fillStyle = fg;
+            ctx.fill();
+          }
+
+          /* ── Serpent trail — sinuous white-violet ribbon ── */
+          if (trail.length >= 3) {
+            for (let i = 1; i < trail.length; i++) {
+              const age = (now - trail[i].t) / 360;
+              const alpha = clamp(1 - age, 0, 1);
+              if (alpha < 0.01) continue;
+              const w = lerp(1.5, 9, 1 - age);
+              ctx.beginPath();
+              ctx.moveTo(trail[i - 1].x, trail[i - 1].y);
+              ctx.lineTo(trail[i].x, trail[i].y);
+
+              /* Deep shadow outer glow */
+              ctx.lineWidth = w * 4.8;
+              ctx.strokeStyle = `rgba(15,5,30,${alpha * 0.16})`;
+              ctx.stroke();
+              /* Violet mid */
+              ctx.lineWidth = w * 2.9;
+              ctx.strokeStyle = `rgba(120,60,200,${alpha * 0.28})`;
+              ctx.stroke();
+              /* Silver accent */
+              ctx.lineWidth = w * 1.7;
+              ctx.strokeStyle = `rgba(200,185,240,${alpha * 0.24})`;
+              ctx.stroke();
+              /* Pearl-white core */
+              ctx.lineWidth = w * 1.1;
+              ctx.strokeStyle = `rgba(240,235,255,${alpha * 0.64})`;
+              ctx.stroke();
+              /* Bright white spine */
+              ctx.lineWidth = Math.max(0.8, w * 0.42);
+              ctx.strokeStyle = `rgba(255,255,255,${alpha * 0.96})`;
+              ctx.stroke();
+            }
+          }
+
+          /* ── Void sparks ── */
+          for (let i = 0; i < SPKMAX; i++) {
+            const s = sparks[i];
+            if (!s.alive) continue;
+            s.age += dt;
+            if (s.age >= s.life) { s.alive = false; continue; }
+            s.px = s.x; s.py = s.y;
+            s.x += s.vx * dtS;
+            s.y += s.vy * dtS;
+            s.vy += 142 * dtS;
+            s.vx *= Math.pow(0.89, dtS * 60);
+            const tp = s.age / s.life;
+            const a = clamp((1 - tp) * (1 - tp) * s.bright * 1.2, 0, 1);
+            const hotness = 1 - tp * 0.55;
+            const tlen = Math.hypot(s.x - s.px, s.y - s.py);
+            const slen = clamp(tlen, 2, 20);
+            const ang = Math.atan2(s.y - s.py, s.x - s.px);
+
+            ctx.setTransform(dpr, 0, 0, dpr, s.x, s.y);
+            ctx.rotate(ang + Math.PI);
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.lineTo(slen, 0);
+            const gc = ctx.createLinearGradient(0, 0, slen, 0);
+            if (s.venom) {
+              gc.addColorStop(0, venomColor(hotness, a));
+              gc.addColorStop(1, venomColor(hotness * 0.35, 0));
+            } else {
+              gc.addColorStop(0, pearlColor(hotness, a));
+              gc.addColorStop(1, pearlColor(hotness * 0.35, 0));
+            }
+            ctx.strokeStyle = gc;
+            ctx.lineWidth = clamp(2 - tp * 1.5, 0.4, 2);
+            ctx.stroke();
+            ctx.strokeStyle = s.venom
+              ? venomColor(hotness, a * 0.22)
+              : pearlColor(hotness, a * 0.22);
+            ctx.lineWidth = clamp(2 - tp * 1.5, 0.4, 2) * 2.2;
+            ctx.stroke();
+          }
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+          /* ── Scale / mote particles ── */
+          for (let i = 0; i < SMAX; i++) {
+            const e = scales[i];
+            if (!e.alive) continue;
+            e.age += dt;
+            if (e.age >= e.life) { e.alive = false; continue; }
+            e.x += e.vx * dtS + Math.sin(now * 0.003 + e.phase) * e.sway * dtS;
+            e.y += e.vy * dtS;
+            e.vy += e.grav * dtS;
+            e.vx *= Math.pow(0.976, dtS * 60);
+            e.rot += e.rotSpd * dtS;
+            const tp = e.age / e.life;
+            const hotness = e.hot * (1 - tp * 0.62);
+            const a = (1 - tp) * (1 - tp) * 0.92;
+            const r = e.sz * (1 - tp * 0.28);
+            if (r < 0.4) continue;
+
+            /* Diamond scale shape */
+            ctx.save();
+            ctx.translate(e.x, e.y);
+            ctx.rotate(e.rot);
+            ctx.scale(1, 0.52);
+            ctx.beginPath();
+            ctx.arc(0, 0, Math.max(0.4, r), 0, TAU);
+            ctx.fillStyle = e.venom
+              ? venomColor(hotness, a)
+              : pearlColor(hotness, a);
+            ctx.fill();
+            /* Scale glow */
+            ctx.scale(1, 1 / 0.52);
+            ctx.scale(2.2, 2.2);
+            ctx.beginPath();
+            ctx.arc(0, 0, Math.max(0.4, r), 0, TAU);
+            ctx.fillStyle = e.venom
+              ? venomColor(clamp(hotness, 0, 1), a * 0.22)
+              : pearlColor(clamp(hotness, 0, 1), a * 0.22);
+            ctx.fill();
+            ctx.restore();
+          }
+
+          /* ── LIVING SERPENT BODY ── */
+          drawSnakeBody(now, dtS);
+
+          /* ── Orbiting coil ── */
+          drawCoil(now, dtS);
+
+          /* ── Cursor tip — Serpent Breathing vortex core ── */
+          {
+            const breathe =
+              0.88 +
+              0.08 * Math.sin(now * 0.0095) +
+              0.052 * Math.sin(now * 0.023 + 1.2) +
+              0.034 * Math.sin(now * 0.038 + 2.6);
+            const jx = Math.sin(now * 0.016) * 0.9;
+            const jy = Math.sin(now * 0.013 + 1.8) * 0.9;
+            const cx = P.x + jx, cy = P.y + jy;
+
+            /* Far outer void aura — deep violet */
+            const vg = ctx.createRadialGradient(cx, cy, 0, cx, cy, 76 * breathe);
+            vg.addColorStop(0, `rgba(130,80,220,0.17)`);
+            vg.addColorStop(0.5, `rgba(50,15,100,0.07)`);
+            vg.addColorStop(1, "rgba(0,0,0,0)");
+            ctx.fillStyle = vg;
+            ctx.beginPath();
+            ctx.arc(cx, cy, 76 * breathe, 0, TAU);
+            ctx.fill();
+
+            /* Silver-pearl warmth ring */
+            const rg = ctx.createRadialGradient(cx, cy, 16 * breathe, cx, cy, 44 * breathe);
+            rg.addColorStop(0, "rgba(0,0,0,0)");
+            rg.addColorStop(0.5, `rgba(220,210,255,0.12)`);
+            rg.addColorStop(1, "rgba(0,0,0,0)");
+            ctx.fillStyle = rg;
+            ctx.beginPath();
+            ctx.arc(cx, cy, 44 * breathe, 0, TAU);
+            ctx.fill();
+
+            /* Mid pearl-violet bloom */
+            const mg = ctx.createRadialGradient(cx, cy - 1.8, 0, cx, cy, 30 * breathe);
+            mg.addColorStop(0, `rgba(245,238,255,0.86)`);
+            mg.addColorStop(0.28, `rgba(190,155,255,0.70)`);
+            mg.addColorStop(0.65, `rgba(100,40,180,0.32)`);
+            mg.addColorStop(1, "rgba(0,0,0,0)");
+            ctx.fillStyle = mg;
+            ctx.beginPath();
+            ctx.arc(cx, cy - 1.8, 30 * breathe, 0, TAU);
+            ctx.fill();
+
+            /* Inner pure-white core */
+            const hg = ctx.createRadialGradient(cx, cy, 0, cx, cy, 10 * breathe);
+            hg.addColorStop(0, `rgba(255,255,255,1)`);
+            hg.addColorStop(0.38, `rgba(240,230,255,0.95)`);
+            hg.addColorStop(0.72, `rgba(180,140,255,0.52)`);
+            hg.addColorStop(1, "rgba(80,20,160,0)");
+            ctx.fillStyle = hg;
+            ctx.beginPath();
+            ctx.arc(cx, cy, 10 * breathe, 0, TAU);
+            ctx.fill();
+
+            /* Tiny pearl center */
+            ctx.fillStyle = `rgba(255,255,255,${breathe * 0.97})`;
+            ctx.beginPath();
+            ctx.arc(cx, cy, 2.3 * breathe, 0, TAU);
+            ctx.fill();
+          }
+
+          ctx.globalCompositeOperation = "source-over";
+
+          /* ── Ambient glow layer on HD canvas ── */
+          hctx.clearRect(0, 0, W, H);
+          for (let i = 0; i < HDMAX; i++) {
+            const h = hdCells[i];
+            if (!h.alive) continue;
+            h.age += dt;
+            if (h.age >= h.life) { h.alive = false; continue; }
+            const tp = h.age / h.life;
+            const r = h.str * 17 * (1 - tp * 0.34);
+            const a = (1 - tp) * 0.09;
+            const g = hctx.createRadialGradient(h.x, h.y, 0, h.x, h.y, r);
+            g.addColorStop(0, `rgba(210,190,255,${a})`);
+            g.addColorStop(0.5, `rgba(100,50,180,${a * 0.4})`);
+            g.addColorStop(1, "rgba(0,0,0,0)");
+            hctx.fillStyle = g;
+            hctx.beginPath();
+            hctx.arc(h.x, h.y, r, 0, TAU);
+            hctx.fill();
+          }
+        }
+
+        requestAnimationFrame(frame);
+      })();
+    </script>
+  </body>
+</html>
