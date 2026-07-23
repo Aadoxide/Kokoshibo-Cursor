@@ -2,16 +2,6 @@
 
 This wraps the existing `index.html` as a transparent Windows desktop overlay. The app follows the real system cursor and draws the Moon Breathing canvas effect across the whole desktop.
 
-## GitHub Upload Layout
-
-Upload the source files in this folder to the GitHub repository, but do not upload `node_modules`, `dist`, or `release`. They are ignored by `.gitignore`.
-
-For a precompiled download, upload this file to a GitHub Release:
-
-```text
-release/Moon-Breathing-Cursor-win-x64-v1.0.0.zip
-```
-
 ## Run
 
 ```powershell
