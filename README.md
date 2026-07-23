@@ -1,6 +1,6 @@
 # Moon Breathing Desktop Cursor
 
-This wraps the existing `index.html` as a transparent Windows desktop overlay. The app follows the real system cursor and draws the Moon Breathing canvas effect across the whole desktop.
+This wraps Faiz's website-only moon breathing cursor as a transparent Windows desktop overlay. The app follows the real system cursor and draws the cursor canvas effect across the whole desktop.
 
 ## Run
 
@@ -32,7 +32,7 @@ If you ever need to restore the Windows cursor manually:
 npm run restore-cursor
 ```
 
-## Build a Windows App
+## Build the (windows) app
 
 ```powershell
 npm run build:win
@@ -40,7 +40,7 @@ npm run build:win
 
 The packaged app will be created under `dist/win-unpacked`. Run `Moon Breathing Cursor.exe` from that folder.
 
-## Important Cursor Note
+## IMPORTANT
 
 Electron draws the animated effect globally. On startup, the app uses Windows system cursor APIs to temporarily swap the normal cursor shapes for transparent ones. On exit, it restores them.
 
