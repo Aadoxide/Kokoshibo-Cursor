@@ -1,0 +1,43 @@
+{
+  "name": "moon-breathing-desktop-cursor",
+  "version": "1.0.0",
+  "description": "Global Windows desktop overlay for the Moon Breathing cursor effect.",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "hide-cursor": "powershell -ExecutionPolicy Bypass -File scripts/hide-windows-cursor.ps1",
+    "restore-cursor": "powershell -ExecutionPolicy Bypass -File scripts/restore-windows-cursor.ps1",
+    "build:win": "electron-builder --win dir"
+  },
+  "devDependencies": {
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "local.moon-breathing.cursor",
+    "productName": "Moon Breathing Cursor",
+    "files": [
+      "index.html",
+      "main.js",
+      "preload.js",
+      "bg.png"
+    ],
+    "extraResources": [
+      {
+        "from": "scripts",
+        "to": "scripts"
+      }
+    ],
+    "extraFiles": [
+      {
+        "from": "release-tools/Stop Moon Breathing Cursor.cmd",
+        "to": "Stop Moon Breathing Cursor.cmd"
+      }
+    ],
+    "win": {
+      "target": "dir",
+      "signAndEditExecutable": false
+    }
+  }
+}
